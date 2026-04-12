@@ -9,7 +9,7 @@
 from pyspark.sql import Column, DataFrame
 from pyspark.sql import functions as F
 
-from LSDPConfiguracion import (
+from .LSDPConfiguracion import (
     HASH_HUB_LINK_BITS,
     HASH_SATELLITE_BITS,
     HASH_SEPARATOR,

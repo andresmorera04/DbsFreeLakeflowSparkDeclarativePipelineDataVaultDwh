@@ -68,3 +68,28 @@
   - Confirmar que las columnas `año`, `mes`, `dia`, `FechaRegistroParquet` y `_rescued_data` son exclusivas de Bronce
   - Verificar que los 3 notebooks siguen el mismo patrón idéntico: 2 tablas LSDP cada uno (ST temporal + MV snapshot), misma lógica de snapshot, mismas opciones de AutoLoader
   - _Requirements: 7.1, 7.2, 7.3, 7.4, 7.5, 7.6, 7.7, 7.8, 8.1, 8.2, 8.3, 8.4, 8.5, 8.6_
+
+---
+
+# Validación Final — 2026-04-12
+
+**Estado**: ✅ Validado por el usuario
+
+| Criterio de Validación | Resultado |
+|------------------------|-----------|
+| Pruebas unitarias (`tests/`) | ✅ Passed |
+| Generación de Parquets (`explorations/GenerarParquets/`) | ✅ Passed |
+| Ejecución pipeline LSDP Bronce (`transformations/LSDPBronce*.py`) | ✅ Passed |
+
+**Confirmación del usuario**: Todas las pruebas, la generación de los Parquets y la ejecución del LSDP con los notebooks de Bronce se ejecutaron de forma exitosa.
+
+**Trazabilidad de artefactos validados**:
+- `src/LSDP_Lab_DataVault_DWH/utilities/LSDPConfiguracion.py` — Módulo de configuración centralizada
+- `src/LSDP_Lab_DataVault_DWH/utilities/LSDPUtilidadPrincipal.py` — Funciones helper reutilizables
+- `src/LSDP_Lab_DataVault_DWH/transformations/LSDPBronceCMSTFL.py` — Ingesta Bronce CMSTFL
+- `src/LSDP_Lab_DataVault_DWH/transformations/LSDPBronceTRXPFL.py` — Ingesta Bronce TRXPFL
+- `src/LSDP_Lab_DataVault_DWH/transformations/LSDPBronceBLNCFL.py` — Ingesta Bronce BLNCFL
+- `src/LSDP_Lab_DataVault_DWH/explorations/GenerarParquets/` — Notebooks generadores de datos
+- `tests/test_configuracion.py` — Tests del módulo de configuración
+- `tests/test_utilidad_principal.py` — Tests de funciones helper
+- `tests/test_notebooks_bronce.py` — Tests de los notebooks de Bronce

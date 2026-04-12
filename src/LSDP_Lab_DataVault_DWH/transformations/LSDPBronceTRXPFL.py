@@ -8,6 +8,7 @@
 from pyspark import pipelines as dp
 from pyspark.sql import functions as F
 from utilities.LSDPConfiguracion import obtener_configuracion
+from utilities.LSDPUtilidadPrincipal import reordenar_columnas_lc
 
 config = obtener_configuracion(spark)
 
@@ -18,7 +19,7 @@ config = obtener_configuracion(spark)
     cluster_by=["FechaRegistroParquet"],
 )
 def trxpfl_temp():
-    return (
+    df = (
         spark.readStream.format("cloudFiles")
         .option("cloudFiles.format", "parquet")
         .option("cloudFiles.inferColumnTypes", "true")
@@ -31,6 +32,7 @@ def trxpfl_temp():
             F.to_date(F.concat_ws("-", F.col("año"), F.col("mes"), F.col("dia"))),
         )
     )
+    return reordenar_columnas_lc(df, ["FechaRegistroParquet"])
 
 
 @dp.materialized_view(
@@ -38,9 +40,10 @@ def trxpfl_temp():
     cluster_by=["FechaRegistroParquet"],
 )
 def trxpfl():
-    df = spark.read.table("TRXPFL_temp")
+    df = dp.read("TRXPFL_temp")
     max_fecha = df.select(F.max("FechaRegistroParquet").alias("max_fecha"))
-    return (
+    resultado = (
         df.join(F.broadcast(max_fecha), df["FechaRegistroParquet"] == max_fecha["max_fecha"])
         .drop("max_fecha")
     )
+    return reordenar_columnas_lc(resultado, ["FechaRegistroParquet"])

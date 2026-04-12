@@ -78,18 +78,23 @@ UMBRAL_RIESGO_FRAUDE = {
 # === Función de Configuración del Pipeline ===
 
 def obtener_configuracion(spark):
+    catalogo = spark.conf.get("pipeline.catalogo")
+    esquema = spark.conf.get("pipeline.esquema")
+    volumen = spark.conf.get("pipeline.volumen")
+    base_volumen = f"/Volumes/{catalogo}/{esquema}/{volumen}"
+
     return {
-        "catalogo": spark.conf.get("pipeline.catalogo"),
-        "esquema": spark.conf.get("pipeline.esquema"),
-        "volumen": spark.conf.get("pipeline.volumen"),
+        "catalogo": catalogo,
+        "esquema": esquema,
+        "volumen": volumen,
         "catalogo_plata": spark.conf.get("pipeline.catalogo_plata"),
         "esquema_plata": spark.conf.get("pipeline.esquema_plata"),
         "catalogo_oro": spark.conf.get("pipeline.catalogo_oro"),
         "esquema_oro": spark.conf.get("pipeline.esquema_oro"),
-        "ruta_cmstfl": spark.conf.get("pipeline.ruta_cmstfl"),
-        "ruta_trxpfl": spark.conf.get("pipeline.ruta_trxpfl"),
-        "ruta_blncfl": spark.conf.get("pipeline.ruta_blncfl"),
-        "schema_location_cmstfl": spark.conf.get("pipeline.schema_location_cmstfl"),
-        "schema_location_trxpfl": spark.conf.get("pipeline.schema_location_trxpfl"),
-        "schema_location_blncfl": spark.conf.get("pipeline.schema_location_blncfl"),
+        "ruta_cmstfl": f"{base_volumen}/{spark.conf.get('pipeline.ruta_cmstfl')}",
+        "ruta_trxpfl": f"{base_volumen}/{spark.conf.get('pipeline.ruta_trxpfl')}",
+        "ruta_blncfl": f"{base_volumen}/{spark.conf.get('pipeline.ruta_blncfl')}",
+        "schema_location_cmstfl": f"{base_volumen}/{spark.conf.get('pipeline.schema_location_cmstfl')}",
+        "schema_location_trxpfl": f"{base_volumen}/{spark.conf.get('pipeline.schema_location_trxpfl')}",
+        "schema_location_blncfl": f"{base_volumen}/{spark.conf.get('pipeline.schema_location_blncfl')}",
     }
