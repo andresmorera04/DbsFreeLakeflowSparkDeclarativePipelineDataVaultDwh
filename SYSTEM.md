@@ -96,7 +96,22 @@ La medalla de Bronce se compone de **dos capas de tablas** por cada fuente de da
 
 ### Medalla de Plata — Data Vault 2.0 (Raw Vault)
 
-La medalla de Plata implementa el **Raw Vault del modelado Data Vault 2.0**, compuesto por tres tipos de tablas: Hubs, Links y Satellites. Todas las tablas de esta medalla se gestionan como Delta Tables o Materialized Views dentro de LSDP.
+La medalla de Plata implementa el **Raw Vault del modelado Data Vault 2.0**, compuesto por tres tipos de tablas: Hubs, Links y Satellites.
+
+**Estrategia de tipos de tabla LSDP por entidad Data Vault:**
+
+| Entidad DV2.0 | Tipo de tabla LSDP | Decorador/API | Justificación |
+|---------------|-------------------|---------------|----------------|
+| **Hubs** (3) | Materialized View | `@dp.materialized_view()` | Tablas de referencia idempotentes: el `dropDuplicates` sobre llaves de negocio produce siempre el mismo resultado. Recalcular completamente es correcto y eficiente. |
+| **Links** (2) | Materialized View | `@dp.materialized_view()` | Tablas de relación idempotentes: la combinación de hashes de dos Hubs con `dropDuplicates` es determinista. |
+| **Satellites** (9) | Streaming Table Acumulativa | `dp.create_streaming_table()` + `@dp.append_flow()` | Los Satellites son estrictamente **Append-Only** y acumulan historial indefinidamente. Una Materialized View recalcula la tabla completa en CADA ejecución, lo que destruye la semántica Append-Only de Data Vault 2.0 y deteriora gravemente el rendimiento a medida que crece el historial acumulado. El patrón `dp.create_streaming_table()` + `@dp.append_flow()` preserva permanentemente los registros existentes y solo agrega los cambios detectados por `Hash_Diferenciador`. Es el mismo patrón aprobado para `Dim_Tiempo` en la Medalla de Oro. |
+
+> **Decisión de diseño crítica**: Los Satellites **NO usan** `@dp.materialized_view()`. La razón fundamental es que una MV recalcula completamente la tabla en cada ejecución del pipeline, lo cual:
+> 1. **Viola el principio Append-Only** de Data Vault 2.0 — los registros históricos deben ser inmutables y nunca reprocesados.
+> 2. **Deteriora el rendimiento exponencialmente** — a medida que se acumulan registros de cambios, el recalculo completo es inviable.
+> 3. **No es escalable** — el patrón Window + ROW_NUMBER + left join para detección de cambios solo debe ejecutarse para comparar hashes, no para reconstruir toda la tabla.
+>
+> En su lugar, se usa `dp.create_streaming_table()` para definir la tabla (con expectations, cluster_by y table_properties) y `@dp.append_flow()` para insertar únicamente los registros nuevos o con cambios detectados. La función `procesar_satellite()` lee el Satellite existente vía `spark.read.table()`, obtiene el último `Hash_Diferenciador` por entidad y retorna SOLO los cambios.
 
 > **Referencia bibliográfica**: El diseño del Data Vault 2.0 sigue los principios descritos en el libro *"Building a Scalable Data Warehouse with Data Vault 2.0"* (disponible en `Temporal/Building-a-Scalable-Data-Warehouse-with-Data-Vault-2.0.pdf`) y la guía oficial de Databricks: https://www.databricks.com/blog/what-is-data-vault
 
@@ -135,7 +150,7 @@ Las tablas Link materializan las **relaciones entre dos tablas Hub**, creando un
 | `FuenteDatos` | STRING | Nombre completo de tres partes de la tabla de Bronce origen. |
 
 **Procesamiento — Append Only**:  
-Solo se inserta una nueva tupla cuando la combinación de los dos hashes de Hubs **no existe** previamente en la tabla Link. Para generar los registros, se leen y cruzan las Delta Tables/Materialized Views de Bronce cuyas llaves de negocio se relacionan, y se resuelve el hash del Hub correspondiente. Los datos ya almacenados son persistentes e inmutables.
+Solo se inserta una nueva tupla cuando la combinación de los dos hashes de Hubs **no existe** previamente en la tabla Link. Para generar los registros, se leen las Materialized Views de Bronce cuyas llaves de negocio se relacionan, y se resuelve el hash del Hub correspondiente. Los datos ya almacenados son persistentes e inmutables.
 
 **Criterio de creación**: Se crea un Link cuando en el origen de datos existe una relación (por ejemplo, vía Foreign Key) entre dos entidades. **Alcance del laboratorio**: Cada Link relaciona exactamente **dos Hubs** (no se modelan Links de tres o más Hubs).
 
@@ -612,8 +627,8 @@ El nombre de tres partes (`catalogo.esquema.tabla`) debe pasarse completo en el 
 | Liquid Clustering | ✅ Sí | Optimización de queries |
 | Unity Catalog | ✅ Sí | Gestión de catálogos/esquemas |
 | Volumes | ✅ Sí | Landing Zone para parquets |
-| Materialized Views | ✅ Sí | Para Snapshots y tablas de Plata/Oro |
-| Streaming Tables | ✅ Sí | Para Historia incremental en Bronce y Dim_Tiempo |
+| Materialized Views | ✅ Sí | Para Snapshots de Bronce (Capa 2), Hubs y Links de Plata |
+| Streaming Tables | ✅ Sí | Para Historia incremental en Bronce, Satellites de Plata (Acumulativas con AppendFlow) y Dim_Tiempo en Oro |
 | Lakeflow Jobs | ✅ Sí | Orquestación del pipeline |
 | Delta Lake | ✅ Sí | Formato de almacenamiento |
 | `F.sha2()` | ✅ Sí | Para hashes SHA2-256/512 |

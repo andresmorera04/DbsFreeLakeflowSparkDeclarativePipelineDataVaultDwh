@@ -1,0 +1,47 @@
+{
+  "feature_name": "plata-data-vault-notebooks",
+  "created_at": "2026-04-12T00:00:00Z",
+  "updated_at": "2026-04-14T00:00:00Z",
+  "language": "es",
+  "phase": "implementation-complete-with-finding",
+  "approvals": {
+    "requirements": {
+      "generated": true,
+      "approved": true
+    },
+    "design": {
+      "generated": true,
+      "approved": true
+    },
+    "tasks": {
+      "generated": true,
+      "approved": true
+    }
+  },
+  "ready_for_implementation": true,
+  "critical_finding": {
+    "id": "FIND-001",
+    "date": "2026-04-13",
+    "severity": "CRITICAL",
+    "status": "identified-pending-next-increment",
+    "summary": "Incompatibilidad arquitectónica MV → ST: las Materialized Views de Bronce generan commits non-append al recalcularse, rompiendo el contrato append-only de las Streaming Tables de Satellites",
+    "affected_notebooks": [
+      "LSDPPlataSatCliente.py",
+      "LSDPPlataSatOperacion.py",
+      "LSDPPlataSatTransaccion.py"
+    ],
+    "affected_tables": [
+      "Sat_Cliente_DatosEstables",
+      "Sat_Cliente_Contacto",
+      "Sat_Cliente_Clasificacion",
+      "Sat_Cliente_Financiero",
+      "Sat_Operacion_DatosEstables",
+      "Sat_Operacion_Montos",
+      "Sat_Operacion_FechasEvento",
+      "Sat_Transaccion_DatosEstables",
+      "Sat_Transaccion_Montos"
+    ],
+    "hotfix_applied": "Lectura cambiada de MV a ST temporal (dp.read_stream) como mitigación inmediata",
+    "resolution_planned": "Próximo incremento: rediseñar flujo Bronce→Plata Satellites para garantizar compatibilidad append-only sostenible"
+  }
+}

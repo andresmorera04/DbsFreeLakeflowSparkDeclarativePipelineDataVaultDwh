@@ -86,8 +86,9 @@ ruta_base_autoloader = spark.conf.get("pipeline.ruta_base_autoloader")
 2. **SHA2 sobre F.hash()** — Para llaves de negocio se usa SHA2-256/512 (determinístico, sin colisiones prácticas). `F.hash()` solo donde se necesite hash simple con protección ANSI.
 3. **Liquid Clustering sobre Z-Order** — Optimización nativa de Delta Lake; `FechaRegistro` siempre primera columna del cluster.
 4. **Append Only en Data Vault** — Hubs y Satellites nunca actualizan ni eliminan; solo insertan nuevos registros.
-5. **Materialized Views para snapshots** — La Capa 2 de Bronce usa MV que se recalcula automáticamente con datos más recientes.
-6. **Constantes centralizadas** — Todos los umbrales de negocio se definen en el notebook de configuración, nunca hard-coded en transformaciones.
+5. **Materialized Views para snapshots e idempotencia** — La Capa 2 de Bronce usa MV para snapshot más reciente. En Plata, los Hubs y Links usan MV porque son idempotentes (el `dropDuplicates` siempre produce el mismo resultado). Los Satellites **NO usan MV** — una MV recalcula la tabla completa en cada ejecución, violando el principio Append-Only de Data Vault 2.0 y degradando el rendimiento exponencialmente con el historial acumulado.
+6. **Streaming Tables Acumulativas para Satellites** — Los Satellites usan `dp.create_streaming_table()` + `@dp.append_flow()` para preservar registros existentes y solo agregar cambios detectados. Este patrón (aprobado para `Dim_Tiempo` en Oro) garantiza Append-Only real: `procesar_satellite()` compara `Hash_Diferenciador` y retorna solo los cambios, y `@dp.append_flow()` los inserta sin tocar el historial.
+7. **Constantes centralizadas** — Todos los umbrales de negocio se definen en el notebook de configuración, nunca hard-coded en transformaciones.
 
 ## Expectations (Calidad de Datos)
 
