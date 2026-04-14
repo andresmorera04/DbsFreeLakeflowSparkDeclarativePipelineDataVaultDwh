@@ -103,18 +103,20 @@ def test_obtener_configuracion_lee_spark_conf_get():
         "pipeline.esquema_plata": "esq_plata",
         "pipeline.catalogo_oro": "cat_oro",
         "pipeline.esquema_oro": "esq_oro",
-        "pipeline.ruta_cmstfl": "/ruta/cmstfl",
-        "pipeline.ruta_trxpfl": "/ruta/trxpfl",
-        "pipeline.ruta_blncfl": "/ruta/blncfl",
-        "pipeline.schema_location_cmstfl": "/schema/cmstfl",
-        "pipeline.schema_location_trxpfl": "/schema/trxpfl",
-        "pipeline.schema_location_blncfl": "/schema/blncfl",
+        "pipeline.ruta_cmstfl": "ruta/cmstfl",
+        "pipeline.ruta_trxpfl": "ruta/trxpfl",
+        "pipeline.ruta_blncfl": "ruta/blncfl",
+        "pipeline.schema_location_cmstfl": "schema/cmstfl",
+        "pipeline.schema_location_trxpfl": "schema/trxpfl",
+        "pipeline.schema_location_blncfl": "schema/blncfl",
     }
     mock_spark.conf.get.side_effect = lambda k: valores[k]
     config = mod.obtener_configuracion(mock_spark)
+    base = "/Volumes/mi_catalogo/mi_esquema/mi_volumen"
     assert config["catalogo"] == "mi_catalogo"
-    assert config["ruta_cmstfl"] == "/ruta/cmstfl"
-    assert config["schema_location_blncfl"] == "/schema/blncfl"
+    # Las rutas se construyen como {base_volumen}/{ruta_relativa}
+    assert config["ruta_cmstfl"] == f"{base}/ruta/cmstfl"
+    assert config["schema_location_blncfl"] == f"{base}/schema/blncfl"
 
 
 def test_obtener_configuracion_propaga_error_sin_default():
