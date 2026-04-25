@@ -48,24 +48,11 @@ def test_tiene_decorador_dp_table():
         assert "@dp.table(" in codigo, f"{origen}: falta @dp.table"
 
 
-def test_tiene_decorador_dp_materialized_view():
+def test_st_es_persistente():
+    """La ST de Bronce debe ser PERSISTENTE (sin temporary=True)."""
     for origen in NOTEBOOKS:
         codigo = _leer(origen)
-        assert "@dp.materialized_view(" in codigo, f"{origen}: falta @dp.materialized_view"
-
-
-# ===== Streaming Table temporal =====
-
-def test_st_es_temporal():
-    for origen in NOTEBOOKS:
-        codigo = _leer(origen)
-        assert "temporary=True" in codigo, f"{origen}: ST debe ser temporal"
-
-
-def test_st_nombre_temp():
-    for origen in NOTEBOOKS:
-        codigo = _leer(origen)
-        assert f"{origen}_temp" in codigo, f"{origen}: ST debe llamarse {origen}_temp"
+        assert "temporary=True" not in codigo, f"{origen}: ST debe ser persistente, no temporal"
 
 
 # ===== AutoLoader =====
@@ -117,9 +104,10 @@ def test_mv_no_usa_catalog_kwarg():
 # ===== Snapshot con broadcast =====
 
 def test_usa_broadcast_para_snapshot():
+    """La ST de Bronce ya NO usa MV de snapshot — no debe haber broadcast."""
     for origen in NOTEBOOKS:
         codigo = _leer(origen)
-        assert "broadcast" in codigo, f"{origen}: falta F.broadcast para snapshot"
+        assert "broadcast" not in codigo, f"{origen}: NO debe usar F.broadcast (MV eliminada)"
 
 
 # ===== Liquid Clustering =====
@@ -182,11 +170,11 @@ def test_rutas_especificas():
 
 # ===== Patrón consistente entre las 3 fuentes =====
 
-def test_patron_consistente_2_funciones_lsdp():
-    """Cada notebook debe tener exactamente 2 funciones decoradas LSDP."""
+def test_patron_consistente_1_funcion_lsdp():
+    """Cada notebook debe tener exactamente 1 función decorada LSDP (ST persistente)."""
     for origen in NOTEBOOKS:
         codigo = _leer(origen)
         count_table = codigo.count("@dp.table(")
         count_mv = codigo.count("@dp.materialized_view(")
         assert count_table == 1, f"{origen}: debe tener exactamente 1 @dp.table, tiene {count_table}"
-        assert count_mv == 1, f"{origen}: debe tener exactamente 1 @dp.materialized_view, tiene {count_mv}"
+        assert count_mv == 0, f"{origen}: NO debe tener @dp.materialized_view, tiene {count_mv}"

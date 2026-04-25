@@ -85,10 +85,21 @@ ruta_base_autoloader = spark.conf.get("pipeline.ruta_base_autoloader")
 1. **LSDP sobre código imperativo** — El framework declarativo gestiona dependencias, reintentos y linaje automáticamente.
 2. **SHA2 sobre F.hash()** — Para llaves de negocio se usa SHA2-256/512 (determinístico, sin colisiones prácticas). `F.hash()` solo donde se necesite hash simple con protección ANSI.
 3. **Liquid Clustering sobre Z-Order** — Optimización nativa de Delta Lake; `FechaRegistro` siempre primera columna del cluster.
-4. **Append Only en Data Vault** — Hubs y Satellites nunca actualizan ni eliminan; solo insertan nuevos registros.
-5. **Materialized Views para snapshots e idempotencia** — La Capa 2 de Bronce usa MV para snapshot más reciente. En Plata, los Hubs y Links usan MV porque son idempotentes (el `dropDuplicates` siempre produce el mismo resultado). Los Satellites **NO usan MV** — una MV recalcula la tabla completa en cada ejecución, violando el principio Append-Only de Data Vault 2.0 y degradando el rendimiento exponencialmente con el historial acumulado.
-6. **Streaming Tables Acumulativas para Satellites** — Los Satellites usan `dp.create_streaming_table()` + `@dp.append_flow()` para preservar registros existentes y solo agregar cambios detectados. Este patrón (aprobado para `Dim_Tiempo` en Oro) garantiza Append-Only real: `procesar_satellite()` compara `Hash_Diferenciador` y retorna solo los cambios, y `@dp.append_flow()` los inserta sin tocar el historial.
+4. **Append Only en Data Vault** — Hubs, Links y Satellites nunca actualizan ni eliminan; solo insertan nuevos registros.
+5. **ST única en Bronce** — Cada fuente de datos tiene una única Streaming Table persistente (AutoLoader directo). Se eliminó la arquitectura de 2 capas (ST temporal + MV snapshot). Las entidades de Plata leen Bronce con `dp.read_stream()` dentro de `@dp.append_flow()`.
+6. **Todas las entidades de Plata como ST+AppendFlow** — Hubs, Links y Satellites usan `dp.create_streaming_table()` + `@dp.append_flow()`. No se usan Materialized Views en Plata. Deduplicación via:
+   - **Hubs**: `procesar_hub()` — LEFT ANTI JOIN por columnas de llave de negocio.
+   - **Links**: `procesar_link()` — LEFT ANTI JOIN por columnas de hash.
+   - **Satellites de estado**: `procesar_satellite()` — LEFT JOIN+WHERE via `Hash_Diferenciador` con ROW_NUMBER.
+   - **Satellites transaccionales**: `procesar_satellite_transaccional()` — LEFT ANTI JOIN por `[hash_col, fecha_col]`.
 7. **Constantes centralizadas** — Todos los umbrales de negocio se definen en el notebook de configuración, nunca hard-coded en transformaciones.
+
+## Trazabilidad de Lecturas en Plata
+
+| Función en append_flow | Lee Bronce con | Lee tabla existente con |
+|------------------------|-----------------|-------------------------|
+| Hub / Link flow | `dp.read_stream(f"{cat}.{esq}.{Origen}")` | `spark.read.table()` dentro de `procesar_hub/link()` |
+| Satellite flow | `dp.read_stream(f"{cat}.{esq}.{Origen}")` | `spark.read.table()` dentro de `procesar_satellite*()` |
 
 ## Expectations (Calidad de Datos)
 

@@ -63,10 +63,19 @@ def procesar_satellite(
     existente por llave hash de entidad. Retorna SOLO los registros nuevos
     o con cambios detectados.
 
-    Primera ejecución (tabla no existe): retorna todos los registros entrantes.
+    Primera ejecución (tabla no existe): retorna todos los registros entrantes
+    deduplicados intra-batch por (hash_col, Hash_Diferenciador).
     Ejecuciones posteriores: retorna solo registros donde hash difiere o son nuevos.
+
+    Deduplicación intra-batch OBLIGATORIA por (hash_col, Hash_Diferenciador):
+    el microbatch puede contener múltiples filas con la misma llave de entidad
+    Y el mismo Hash_Diferenciador (snapshots maestros repetidos día a día,
+    Full Refresh que re-entrega historia). Filas con MISMO Hash_Diferenciador
+    son colapsadas; filas con DISTINTO Hash_Diferenciador para la misma
+    entidad se preservan como historia legítima.
     """
     nombre_completo = f"{catalogo_plata}.{esquema_plata}.{nombre_sat}"
+    datos_nuevos = datos_nuevos.dropDuplicates([hash_col, "Hash_Diferenciador"])
     try:
         existente = spark.read.table(nombre_completo)
 
@@ -92,6 +101,101 @@ def procesar_satellite(
         )
         return resultado
 
+    except Exception as exc:
+        from pyspark.sql.utils import AnalysisException
+        if isinstance(exc, AnalysisException):
+            return datos_nuevos
+        raise
+
+
+def procesar_hub(
+    spark,
+    catalogo_plata: str,
+    esquema_plata: str,
+    nombre_hub: str,
+    columnas_llave: list[str],
+    datos_nuevos: DataFrame,
+) -> DataFrame:
+    """Detección de duplicados Append-Only para Hubs Data Vault.
+
+    Lee la tabla Hub existente, ejecuta LEFT ANTI JOIN por las columnas de
+    llave de negocio y retorna SOLO los registros cuyas llaves no existen aún.
+
+    Primera ejecución (tabla no existe): retorna todos los registros entrantes
+    deduplicados intra-batch.
+
+    Deduplicación intra-batch OBLIGATORIA: el microbatch entrante puede contener
+    múltiples filas con la misma llave de negocio (snapshots maestros repetidos
+    día a día, Full Refresh que re-entrega historia acumulada). Se aplica
+    dropDuplicates ANTES del LEFT ANTI JOIN para garantizar unicidad por llave.
+    """
+    nombre_completo = f"{catalogo_plata}.{esquema_plata}.{nombre_hub}"
+    datos_nuevos = datos_nuevos.dropDuplicates(columnas_llave)
+    try:
+        existente = spark.read.table(nombre_completo).select(*columnas_llave)
+        return datos_nuevos.join(existente, columnas_llave, "left_anti")
+    except Exception as exc:
+        from pyspark.sql.utils import AnalysisException
+        if isinstance(exc, AnalysisException):
+            return datos_nuevos
+        raise
+
+
+def procesar_link(
+    spark,
+    catalogo_plata: str,
+    esquema_plata: str,
+    nombre_link: str,
+    columnas_hash: list[str],
+    datos_nuevos: DataFrame,
+) -> DataFrame:
+    """Detección de duplicados Append-Only para Links Data Vault.
+
+    Lee la tabla Link existente, ejecuta LEFT ANTI JOIN por la combinación de
+    hashes de los dos Hubs y retorna SOLO las combinaciones nuevas.
+
+    Primera ejecución (tabla no existe): retorna todos los registros entrantes
+    deduplicados intra-batch.
+
+    Deduplicación intra-batch OBLIGATORIA: el microbatch entrante puede contener
+    múltiples filas con la misma combinación Hash_{hub1} + Hash_{hub2} (p. ej.
+    BLNCFL con saldos repetidos día a día). Se aplica dropDuplicates ANTES del
+    LEFT ANTI JOIN para garantizar unicidad de la relación.
+    """
+    nombre_completo = f"{catalogo_plata}.{esquema_plata}.{nombre_link}"
+    datos_nuevos = datos_nuevos.dropDuplicates(columnas_hash)
+    try:
+        existente = spark.read.table(nombre_completo).select(*columnas_hash)
+        return datos_nuevos.join(existente, columnas_hash, "left_anti")
+    except Exception as exc:
+        from pyspark.sql.utils import AnalysisException
+        if isinstance(exc, AnalysisException):
+            return datos_nuevos
+        raise
+
+
+def procesar_satellite_transaccional(
+    spark,
+    catalogo_plata: str,
+    esquema_plata: str,
+    nombre_sat: str,
+    hash_col: str,
+    fecha_col: str,
+    datos_nuevos: DataFrame,
+) -> DataFrame:
+    """Acumulación histórica Append-Only para Satellites transaccionales.
+
+    Deduplica por la combinación hash_col + fecha_col usando LEFT ANTI JOIN.
+    NO aplica ROW_NUMBER ni reduce a último registro — acumula historia completa.
+    Hash_Diferenciador se preserva en el resultado para trazabilidad pero NO
+    participa en la deduplicación.
+
+    Primera ejecución (tabla no existe): retorna todos los registros entrantes.
+    """
+    nombre_completo = f"{catalogo_plata}.{esquema_plata}.{nombre_sat}"
+    try:
+        existente = spark.read.table(nombre_completo).select(hash_col, fecha_col)
+        return datos_nuevos.join(existente, [hash_col, fecha_col], "left_anti")
     except Exception as exc:
         from pyspark.sql.utils import AnalysisException
         if isinstance(exc, AnalysisException):

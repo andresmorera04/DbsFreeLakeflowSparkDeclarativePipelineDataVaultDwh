@@ -2,7 +2,7 @@
 # ---------------------------------------------------------------------------
 # LSDPBronceBLNCFL — Ingesta Bronce: Saldos/Operaciones (BLNCFL)
 # ---------------------------------------------------------------------------
-# Streaming Table temporal (AutoLoader) + Materialized View snapshot
+# Streaming Table persistente (AutoLoader directo)
 # ---------------------------------------------------------------------------
 
 from pyspark import pipelines as dp
@@ -14,11 +14,10 @@ config = obtener_configuracion(spark)
 
 
 @dp.table(
-    name="BLNCFL_temp",
-    temporary=True,
+    name=f"{config['catalogo']}.{config['esquema']}.BLNCFL",
     cluster_by=["FechaRegistroParquet"],
 )
-def blncfl_temp():
+def blncfl():
     df = (
         spark.readStream.format("cloudFiles")
         .option("cloudFiles.format", "parquet")
@@ -33,17 +32,3 @@ def blncfl_temp():
         )
     )
     return reordenar_columnas_lc(df, ["FechaRegistroParquet"])
-
-
-@dp.materialized_view(
-    name=f"{config['catalogo']}.{config['esquema']}.BLNCFL",
-    cluster_by=["FechaRegistroParquet"],
-)
-def blncfl():
-    df = dp.read("BLNCFL_temp")
-    max_fecha = df.select(F.max("FechaRegistroParquet").alias("max_fecha"))
-    resultado = (
-        df.join(F.broadcast(max_fecha), df["FechaRegistroParquet"] == max_fecha["max_fecha"])
-        .drop("max_fecha")
-    )
-    return reordenar_columnas_lc(resultado, ["FechaRegistroParquet"])

@@ -2,7 +2,7 @@
 # ---------------------------------------------------------------------------
 # LSDPBronceTRXPFL — Ingesta Bronce: Transacciones (TRXPFL)
 # ---------------------------------------------------------------------------
-# Streaming Table temporal (AutoLoader) + Materialized View snapshot
+# Streaming Table persistente (AutoLoader directo)
 # ---------------------------------------------------------------------------
 
 from pyspark import pipelines as dp
@@ -14,11 +14,10 @@ config = obtener_configuracion(spark)
 
 
 @dp.table(
-    name="TRXPFL_temp",
-    temporary=True,
+    name=f"{config['catalogo']}.{config['esquema']}.TRXPFL",
     cluster_by=["FechaRegistroParquet"],
 )
-def trxpfl_temp():
+def trxpfl():
     df = (
         spark.readStream.format("cloudFiles")
         .option("cloudFiles.format", "parquet")
@@ -33,17 +32,3 @@ def trxpfl_temp():
         )
     )
     return reordenar_columnas_lc(df, ["FechaRegistroParquet"])
-
-
-@dp.materialized_view(
-    name=f"{config['catalogo']}.{config['esquema']}.TRXPFL",
-    cluster_by=["FechaRegistroParquet"],
-)
-def trxpfl():
-    df = dp.read("TRXPFL_temp")
-    max_fecha = df.select(F.max("FechaRegistroParquet").alias("max_fecha"))
-    resultado = (
-        df.join(F.broadcast(max_fecha), df["FechaRegistroParquet"] == max_fecha["max_fecha"])
-        .drop("max_fecha")
-    )
-    return reordenar_columnas_lc(resultado, ["FechaRegistroParquet"])

@@ -2,7 +2,7 @@
 # ---------------------------------------------------------------------------
 # LSDPBronceCMSTFL — Ingesta Bronce: Maestro de Clientes (CMSTFL)
 # ---------------------------------------------------------------------------
-# Streaming Table temporal (AutoLoader) + Materialized View snapshot
+# Streaming Table persistente (AutoLoader directo)
 # ---------------------------------------------------------------------------
 
 from pyspark import pipelines as dp
@@ -14,11 +14,10 @@ config = obtener_configuracion(spark)
 
 
 @dp.table(
-    name="CMSTFL_temp",
-    temporary=True,
+    name=f"{config['catalogo']}.{config['esquema']}.CMSTFL",
     cluster_by=["FechaRegistroParquet"],
 )
-def cmstfl_temp():
+def cmstfl():
     df = (
         spark.readStream.format("cloudFiles")
         .option("cloudFiles.format", "parquet")
@@ -33,17 +32,3 @@ def cmstfl_temp():
         )
     )
     return reordenar_columnas_lc(df, ["FechaRegistroParquet"])
-
-
-@dp.materialized_view(
-    name=f"{config['catalogo']}.{config['esquema']}.CMSTFL",
-    cluster_by=["FechaRegistroParquet"],
-)
-def cmstfl():
-    df = dp.read("CMSTFL_temp")
-    max_fecha = df.select(F.max("FechaRegistroParquet").alias("max_fecha"))
-    resultado = (
-        df.join(F.broadcast(max_fecha), df["FechaRegistroParquet"] == max_fecha["max_fecha"])
-        .drop("max_fecha")
-    )
-    return reordenar_columnas_lc(resultado, ["FechaRegistroParquet"])

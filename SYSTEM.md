@@ -67,32 +67,27 @@ El objetivo es construir un laboratorio avanzado de ingeniería de datos que dem
 
 ## Arquitectura Medallón Detallada
 
-### Medalla de Bronce — Ingesta e Instantánea Actual
+### Medalla de Bronce — Ingesta Incremental Persistente
 
-La medalla de Bronce se compone de **dos capas de tablas** por cada fuente de datos de origen (CMSTFL, TRXPFL, BLNCFL):
+La medalla de Bronce se compone de **una única Streaming Table persistente** por cada fuente de datos de origen (CMSTFL, TRXPFL, BLNCFL). Esta tabla lee directamente desde AutoLoader (`cloudFiles`) y acumula todos los registros históricos de forma incremental.
 
-#### Capa 1: Streaming Table Temporal (Historia Incremental)
+#### Streaming Table Persistente (AutoLoader Directo)
 
-- **Tipo de tabla LSDP**: Streaming Table Temporal (Temporary=true)
+- **Tipo de tabla LSDP**: Streaming Table Persistente (`@dp.table` sin `temporary=True`)
 - **Mecanismo de ingesta**: AutoLoader (`cloudFiles`)
-- **Comportamiento**: Ingesta de forma incremental todos los archivos Parquet nuevos que se depositan en la Landing Zone. Cada ejecución del pipeline detecta y procesa únicamente los archivos que no han sido leídos previamente, gracias al mecanismo de checkpoint de AutoLoader.
+- **Comportamiento**: Ingesta de forma incremental todos los archivos Parquet nuevos depositados en la Landing Zone. Cada ejecución procesa únicamente los archivos no leídos previamente, gracias al checkpoint de AutoLoader.
 - **Ruta de origen (parámetro)**: El pipeline recibe como parámetro la ruta base con el siguiente formato:  
   ```
   /Volumes/{Catalogo}/{Esquema}/{NombreVolume}/archivos/LSDP_DataVault_Dwh/As400/{NombreTablaOrigen}/
   ```
-  La estructura de particionamiento físico dentro de esta ruta sigue el patrón `año=YYYY/mes=MM/dia=DD/`, y Spark infiere las columnas de partición automáticamente mediante lazy evaluation.
-- **Columna derivada `FechaRegistroParquet`**: Se genera una nueva columna de tipo `DATE` a partir de la concatenación de las columnas de partición `año`, `mes` y `dia`, con formato `YYYY-MM-DD` (ejemplo: `2026-04-07`). Esta columna representa la fecha en que los datos fuente fueron depositados en la Landing Zone.
-- **Columna `_rescued_data`**: AutoLoader con esquema evolutivo genera automáticamente la columna `_rescued_data` (StringType) para capturar datos que no coincidan con el esquema esperado. Esta columna se incluye en todas las Streaming Tables de Bronce.
-- **Liquid Clustering**: La Streaming Table utiliza **exclusivamente** la columna `FechaRegistroParquet` como clave del Liquid Cluster. No se agregan columnas adicionales al cluster.
-- **Columnas exclusivas de Bronce**: Los campos `año`, `mes`, `dia`, `FechaRegistroParquet` y `_rescued_data` son de uso interno de Bronce. **NO se propagan a Plata ni a Oro**. Su propósito es la gestión de la ingesta incremental y la identificación del snapshot más reciente.
+  La estructura de particionamiento físico sigue el patrón `año=YYYY/mes=MM/dia=DD/`, y Spark infiere las columnas de partición automáticamente mediante lazy evaluation.
+- **Columna derivada `FechaRegistroParquet`**: Se genera una nueva columna `DATE` a partir de `año`, `mes` y `dia`, con formato `YYYY-MM-DD`. Representa la fecha en que los datos fueron depositados en la Landing Zone.
+- **Columna `_rescued_data`**: AutoLoader con esquema evolutivo genera automáticamente la columna `_rescued_data` (StringType) para capturar datos que no coincidan con el esquema.
+- **Liquid Clustering**: La Streaming Table usa **exclusivamente** `FechaRegistroParquet` como clave de Liquid Cluster.
+- **Columnas exclusivas de Bronce**: Los campos `año`, `mes`, `dia`, `FechaRegistroParquet` y `_rescued_data` son de uso interno de Bronce. **NO se propagan a Plata ni a Oro**.
+- **Lectura desde Plata**: Las capas superiores leen la tabla de Bronce mediante `dp.read_stream(f"{catalogo}.{esquema}.{Nombre}")` dentro de funciones `@dp.append_flow()`. **No** se usan tablas temporales intermedias.
 
-#### Capa 2: Delta Table de Instantánea Actual (Snapshot Más Reciente)
-
-- **Tipo de tabla LSDP**: Delta Table (preferida) o Materialized View (como alternativa si Delta Table no es viable).
-- **Fuente de datos**: Se lee la Streaming Table de la Capa 1.
-- **Lógica de procesamiento**: Extrae únicamente los registros cuyo campo `FechaRegistroParquet` corresponda a la fecha más reciente disponible en la Streaming Table. Esta tabla **no acumula historia**: cada ejecución del pipeline refresca completamente su contenido con los datos de la fecha más reciente.
-- **Propósito**: Proporcionar a las medallas superiores (Plata y Oro) una vista limpia y actual de cada fuente de datos, eliminando la necesidad de filtrar por fecha en cada consulta downstream.
-- **Herencia de esquema**: Hereda todas las columnas de la Streaming Table fuente, incluyendo `_rescued_data`.
+> **Decisión de arquitectura**: Se eliminó el patrón anterior de 2 capas (ST temporal + MV con snapshot del último día). La nueva arquitectura usa una ST persistente única que acumula toda la historia. Las capas de Plata y Oro consumen la Bronce directamente vía `dp.read_stream()`, aplicando la lógica de selección de datos pertinentes dentro de sus propias transformaciones.
 
 ### Medalla de Plata — Data Vault 2.0 (Raw Vault)
 
@@ -102,16 +97,18 @@ La medalla de Plata implementa el **Raw Vault del modelado Data Vault 2.0**, com
 
 | Entidad DV2.0 | Tipo de tabla LSDP | Decorador/API | Justificación |
 |---------------|-------------------|---------------|----------------|
-| **Hubs** (3) | Materialized View | `@dp.materialized_view()` | Tablas de referencia idempotentes: el `dropDuplicates` sobre llaves de negocio produce siempre el mismo resultado. Recalcular completamente es correcto y eficiente. |
-| **Links** (2) | Materialized View | `@dp.materialized_view()` | Tablas de relación idempotentes: la combinación de hashes de dos Hubs con `dropDuplicates` es determinista. |
-| **Satellites** (9) | Streaming Table Acumulativa | `dp.create_streaming_table()` + `@dp.append_flow()` | Los Satellites son estrictamente **Append-Only** y acumulan historial indefinidamente. Una Materialized View recalcula la tabla completa en CADA ejecución, lo que destruye la semántica Append-Only de Data Vault 2.0 y deteriora gravemente el rendimiento a medida que crece el historial acumulado. El patrón `dp.create_streaming_table()` + `@dp.append_flow()` preserva permanentemente los registros existentes y solo agrega los cambios detectados por `Hash_Diferenciador`. Es el mismo patrón aprobado para `Dim_Tiempo` en la Medalla de Oro. |
+| **Hubs** (3) | Streaming Table Acumulativa | `dp.create_streaming_table()` + `@dp.append_flow()` | Las tablas Hub son **Append-Only**: solo se insertan llaves de negocio nuevas mediante LEFT ANTI JOIN. El patrón ST+AppendFlow garantiza idempotencia sin reprocesar toda la tabla. La función `procesar_hub()` consulta la tabla existente vía `spark.read.table()` y hace LEFT ANTI JOIN por columnas de llave de negocio. |
+| **Links** (2) | Streaming Table Acumulativa | `dp.create_streaming_table()` + `@dp.append_flow()` | Las tablas Link son **Append-Only**: solo se insertan nuevas relaciones de pares de hashes. La función `procesar_link()` hace LEFT ANTI JOIN por columnas de hash. |
+| **Satellites** (9) | Streaming Table Acumulativa | `dp.create_streaming_table()` + `@dp.append_flow()` | Los Satellites son estrictamente **Append-Only** y acumulan historial indefinidamente. La función `procesar_satellite()` detecta cambios vía `Hash_Diferenciador` con LEFT JOIN+WHERE. La variante `procesar_satellite_transaccional()` usa LEFT ANTI JOIN por `Hash_{entity}` + `fecha_transaccion` para Satellites transaccionales. |
 
-> **Decisión de diseño crítica**: Los Satellites **NO usan** `@dp.materialized_view()`. La razón fundamental es que una MV recalcula completamente la tabla en cada ejecución del pipeline, lo cual:
-> 1. **Viola el principio Append-Only** de Data Vault 2.0 — los registros históricos deben ser inmutables y nunca reprocesados.
-> 2. **Deteriora el rendimiento exponencialmente** — a medida que se acumulan registros de cambios, el recalculo completo es inviable.
-> 3. **No es escalable** — el patrón Window + ROW_NUMBER + left join para detección de cambios solo debe ejecutarse para comparar hashes, no para reconstruir toda la tabla.
+> **Decisión de diseño crítica**: Todos los elementos de Plata (Hubs, Links y Satellites) usan el patrón `dp.create_streaming_table()` + `@dp.append_flow()`. Esto garantiza que **ningún registro existente sea eliminado o reprocesado**, preservando la inmutabilidad histórica inherente al modelo Data Vault 2.0.
 >
-> En su lugar, se usa `dp.create_streaming_table()` para definir la tabla (con expectations, cluster_by y table_properties) y `@dp.append_flow()` para insertar únicamente los registros nuevos o con cambios detectados. La función `procesar_satellite()` lee el Satellite existente vía `spark.read.table()`, obtiene el último `Hash_Diferenciador` por entidad y retorna SOLO los cambios.
+> **Herramientas de deduplicación**:
+> - **Hubs**: función `procesar_hub(spark, catalogo_plata, esquema_plata, nombre_hub, columnas_llave, datos_nuevos)` — LEFT ANTI JOIN por columnas de llave de negocio contra la tabla existente. `AnalysisException` para primera ejecución.
+> - **Links**: función `procesar_link(spark, catalogo_plata, esquema_plata, nombre_link, columnas_hash, datos_nuevos)` — LEFT ANTI JOIN por columnas de hash. `AnalysisException` para primera ejecución.
+> - **Satellites**: función `procesar_satellite(spark, catalogo_plata, esquema_plata, nombre_sat, hash_col, datos_nuevos)` — LEFT JOIN+WHERE sobre `Hash_Diferenciador` con ROW_NUMBER para Satellites de estado (Cliente, Operación). Función `procesar_satellite_transaccional(spark, catalogo_plata, esquema_plata, nombre_sat, hash_col, fecha_col, datos_nuevos)` — LEFT ANTI JOIN por `[hash_col, fecha_col]` para Satellites transaccionales (Transacción).
+>
+> **Lectura de Bronce**: Todas las entidades de Plata leen Bronce con `dp.read_stream(f"{catalogo}.{esquema}.{Nombre}")` dentro del `@dp.append_flow()`. **No** se usa `spark.read.table()` para leer Bronce.
 
 > **Referencia bibliográfica**: El diseño del Data Vault 2.0 sigue los principios descritos en el libro *"Building a Scalable Data Warehouse with Data Vault 2.0"* (disponible en `Temporal/Building-a-Scalable-Data-Warehouse-with-Data-Vault-2.0.pdf`) y la guía oficial de Databricks: https://www.databricks.com/blog/what-is-data-vault
 
@@ -123,13 +120,13 @@ Las tablas Hub almacenan las **llaves de negocio** de cada entidad. Representan 
 
 | Columna | Tipo de Dato | Descripción |
 |---------|-------------|-------------|
-| `{Campo(s)_LlaveNegocio}` | Tipo original | Uno o más campos que conforman la llave de negocio de la entidad. Puede ser la clave primaria o una llave de negocio que no sea PK pero cuyo valor sea único e identifique unívocamente la entidad. Se respeta el tipo de dato original. |
-| `Hash_{NombreHub}` | STRING | Hash calculado con **SHA2-256** sobre la(s) llave(s) de negocio. Reglas de cálculo: (a) Si la llave es un único campo no-STRING, se convierte a STRING y luego se aplica SHA2-256. (b) Si la llave es compuesta, se convierten los campos no-STRING a STRING, se concatenan con separador pipe `\|` (ejemplo: `'ValorCampo1\|ValorCampo2\|ValorCampo3'`), y se aplica SHA2-256 sobre la cadena resultante. |
-| `FechaRegistro` | TIMESTAMP | Momento exacto de inserción de la tupla (equivalente al campo `Load_Date` en la nomenclatura Data Vault 2.0). |
-| `FuenteDatos` | STRING | Nombre completo de tres partes (`catalogo.esquema.tabla`) de la tabla de Bronce origen del registro. |
+| `{Campo(s)_LlaveNegocio}` | Tipo original | Uno o más campos que conforman la llave de negocio de la entidad. Se respeta el tipo de dato original. |
+| `Hash_{NombreHub}` | STRING | Hash calculado con **SHA2-256** sobre la(s) llave(s) de negocio. Reglas: (a) Llave única no-STRING: se convierte a STRING y aplica SHA2-256. (b) Llave compuesta: se concatenan con separador pipe `\|` y se aplica SHA2-256. |
+| `FechaRegistro` | TIMESTAMP | Momento exacto de inserción de la tupla (`Load_Date` en Data Vault 2.0). |
+| `FuenteDatos` | STRING | Nombre de tres partes (`catalogo.esquema.tabla`) de la tabla de Bronce origen. |
 
-**Procesamiento — Append Only**:  
-Solo se insertan llaves de negocio que **no existen** previamente en la tabla Hub. Las llaves ya registradas son **inmutables y persistentes** en el tiempo. Nunca se actualizan ni eliminan registros existentes.
+**Procesamiento — Append Only con LEFT ANTI JOIN**:  
+Only se insertan llaves de negocio que **no existen** en la tabla Hub. La función `procesar_hub()` hace LEFT ANTI JOIN entre los datos nuevos y la tabla Hub existente (leída con `spark.read.table()`). Si la tabla no existe (primera ejecución), se captura `AnalysisException` y se retornan todos los datos como nuevos. Los registros ya almacenados son **inmutables y persistentes**.
 
 **Criterio de creación**: Se crea un Hub por cada entidad de negocio que disponga de una llave de negocio identificable. Ejemplos: Clientes (CUSTID), Operaciones/Saldos (CUSTID + BLSQ), Transacciones (TRXID, o llave compuesta CUSTID + TRXID + TRXSQ).
 
@@ -149,8 +146,8 @@ Las tablas Link materializan las **relaciones entre dos tablas Hub**, creando un
 | `FechaRegistro` | TIMESTAMP | Momento exacto de inserción (Load_Date en Data Vault 2.0). |
 | `FuenteDatos` | STRING | Nombre completo de tres partes de la tabla de Bronce origen. |
 
-**Procesamiento — Append Only**:  
-Solo se inserta una nueva tupla cuando la combinación de los dos hashes de Hubs **no existe** previamente en la tabla Link. Para generar los registros, se leen las Materialized Views de Bronce cuyas llaves de negocio se relacionan, y se resuelve el hash del Hub correspondiente. Los datos ya almacenados son persistentes e inmutables.
+**Procesamiento — Append Only con LEFT ANTI JOIN**:  
+Solo se inserta una nueva tupla cuando la combinación de los dos hashes **no existe** en la tabla Link. La función `procesar_link()` hace LEFT ANTI JOIN entre los datos nuevos y la tabla Link existente (leída con `spark.read.table()`). Si la tabla no existe (primera ejecución), se captura `AnalysisException` y se retornan todos los datos como nuevos. Los datos ya almacenados son persistentes e inmutables.
 
 **Criterio de creación**: Se crea un Link cuando en el origen de datos existe una relación (por ejemplo, vía Foreign Key) entre dos entidades. **Alcance del laboratorio**: Cada Link relaciona exactamente **dos Hubs** (no se modelan Links de tres o más Hubs).
 
@@ -181,17 +178,18 @@ La relación entre un Hub y sus Satellites es **1:N** (un Hub puede tener múlti
 
 **Procesamiento — Append Only con Detección de Cambios (Change Data Capture lógico)**:  
 
-El procesamiento de cada Satellite sigue esta lógica:
+El procesamiento de cada Satellite sigue estrategias distintas según el tipo de entidad:
 
-1. **Obtener el último registro por entidad**: Para cada `Hash_{NombreHubOLink}` presente en el Satellite, se toma el registro más reciente utilizando una función de ventana:
-   ```
-   ROW_NUMBER() OVER (PARTITION BY Hash_{NombreHubOLink} ORDER BY FechaRegistro DESC) = 1
-   ```
-2. **Comparar el `Hash_Diferenciador`**: Se compara el `Hash_Diferenciador` del último registro del Satellite con el `Hash_Diferenciador` generado a partir de los datos que se están procesando.
-3. **Decisión de inserción**:
-   - Si ambos hashes **son iguales**: No hay cambios → no se inserta nada.
-   - Si los hashes **son diferentes**: Hubo cambios en al menos un campo → se inserta como nuevo registro en el Satellite.
-4. Los registros previamente almacenados son **persistentes e inmutables**.
+**Para Satellites de Estado (Cliente, Operación)**:
+1. Obtener el último `Hash_Diferenciador` por entidad usando `ROW_NUMBER() OVER (PARTITION BY hash_col ORDER BY FechaRegistro DESC) = 1`.
+2. LEFT JOIN con los datos nuevos; insertar solo donde el hash cambió o no existe.
+
+**Para Satellites Transaccionales (Transacción)**:
+1. LEFT ANTI JOIN por `[hash_col, fecha_transaccion]` contra la tabla existente.
+2. Cualquier fila cuya combinación (`Hash_Transaccion`, `fecha_transaccion`) no esté en el Satellite se inserta. No se usa ROW_NUMBER ni se compara `Hash_Diferenciador` en el join.
+3. `Hash_Diferenciador` se calcula sobre todos los campos de negocio del registro (se preserva en la tabla pero no interviene en la deduplicación por ser transaccional).
+
+En ambos casos: los registros previamente almacenados son **persistentes e inmutables**.
 
 **Criterio de creación**: Toda tabla Hub debe tener al menos un Satellite. Las tablas Link pueden tener Satellites en casos específicos donde la relación misma posea atributos propios.
 
@@ -320,7 +318,7 @@ DbsFreeLakeflowSparkDeclarativePipelineDataVaultDwh/
         │   └── {Notebooks generadores de archivos Parquet para la Landing Zone}   ← Generan los archivos parquets en el Volume y Ruta Absoluta recibida por parametros
         │
         ├── transformations/           ← Notebooks del pipeline LSDP (código de producción)
-        │   ├── LSDPBronce{Origen}      ← ST temporales + MV snapshot por cada Parquet (CMSTFL, TRXPFL, BLNCFL)
+        │   ├── LSDPBronce{Origen}      ← ST persistente AutoLoader directo por cada fuente Parquet (CMSTFL, TRXPFL, BLNCFL)
         │   ├── LSDPPlata{Entidad}     ← Hubs, Links y Satellites del modelo Data Vault 2.0
         │   └── LSDPOro{Entidad}       ← Dimensiones y tabla de hechos del modelo Estrella
         │
@@ -528,36 +526,54 @@ esquema_oro = spark.conf.get("pipeline.esquema_oro")
 
 ### 1.8 Patrón de Ingesta Bronce (Aprobado)
 
-El patrón aprobado para la Medalla de Bronce consta de **dos pasos secuenciales**:
+El patrón aprobado para la Medalla de Bronce es una **única Streaming Table persistente** con AutoLoader directo. La arquitectura de 2 capas (ST temporal + MV snapshot) fue eliminada.
 
-#### Paso 1 — Streaming Table Temporal con AutoLoader
+#### Streaming Table Persistente con AutoLoader Directo
 
-Se ingestan los parquets de forma incremental y automática usando AutoLoader. Los datos se escriben en una **Streaming Table Temporal** (`temporary=True`) que **no se registra en el Unity Catalog**. En este paso se construye la columna `FechaRegistroParquet` a partir de las columnas de partición `año`, `mes` y `dia` que Spark infiere por lazy evaluation.
+Se ingestan los parquets incremental y automáticamente usando AutoLoader. Los datos se escriben en una **Streaming Table Persistente** registrada en Unity Catalog. En este paso se construye la columna `FechaRegistroParquet`.
 
 ```python
 @dp.table(
-    name="CMSTFL_temp",
-    temporary=True
+    name=f"{catalogo}.{esquema}.CMSTFL",
+    cluster_by=["FechaRegistroParquet"],
 )
-def cmstfl_temp():
-    return (
+def cmstfl():
+    df = (
         spark.readStream.format("cloudFiles")
         .option("cloudFiles.format", "parquet")
         .option("cloudFiles.inferColumnTypes", "true")
         .option("cloudFiles.schemaEvolutionMode", "addNewColumns")
-        .option("cloudFiles.schemaLocation", f"{ruta_base_autoloader}/CMSTFL")
-        .load(ruta_cmstfl)
-        .withColumn("FechaRegistroParquet",
-            F.to_date(F.concat_ws("-", F.col("año"), F.col("mes"), F.col("dia")))
+        .option("cloudFiles.schemaLocation", config["schema_location_cmstfl"])
+        .load(config["ruta_cmstfl"])
+        .withColumn(
+            "FechaRegistroParquet",
+            F.to_date(F.concat_ws("-", F.col("año"), F.col("mes"), F.col("dia"))),
         )
     )
+    return reordenar_columnas_lc(df, ["FechaRegistroParquet"])
+```
+
+**Este patrón se repite para las 3 tablas fuente**:
+- `CMSTFL`
+- `TRXPFL`
+- `BLNCFL`
+
+**Las entidades de Plata leen Bronce con**:
+```python
+dp.read_stream(f"{catalogo}.{esquema}.CMSTFL")  # dentro de @dp.append_flow()
+```
+)
+def cmstfl_temp_OLD():
+    # PATRÓN ELIMINADO — ver sección anterior
+    ...
 ```
 
 #### Paso 2 — Vista Materializada con Snapshot Más Reciente
 
-Se leen **únicamente los registros con la `FechaRegistroParquet` más reciente** de la Streaming Table Temporal y se registran en una **vista materializada** (overwrite semántico implícito) dentro del Unity Catalog. Esta es la tabla de Bronce que alimenta a Plata.
+> **ELIMINADO**: El patrón de MV + snapshot fue reemplazado por ST persistente. Esta sección se mantiene sólo como referencia histórica para proyectos legados.
 
 ```python
+# PATRÓN LEGADO — NO USAR
 @dp.materialized_view(
     name=f"{catalogo}.{esquema}.CMSTFL",
     cluster_by=["FechaRegistroParquet"]
@@ -627,8 +643,8 @@ El nombre de tres partes (`catalogo.esquema.tabla`) debe pasarse completo en el 
 | Liquid Clustering | ✅ Sí | Optimización de queries |
 | Unity Catalog | ✅ Sí | Gestión de catálogos/esquemas |
 | Volumes | ✅ Sí | Landing Zone para parquets |
-| Materialized Views | ✅ Sí | Para Snapshots de Bronce (Capa 2), Hubs y Links de Plata |
-| Streaming Tables | ✅ Sí | Para Historia incremental en Bronce, Satellites de Plata (Acumulativas con AppendFlow) y Dim_Tiempo en Oro |
+| Materialized Views | ⚠️ Solo Oro | En Plata y Bronce se usa ST+AppendFlow. Las MVs de Bronce fueron eliminadas. |
+| Streaming Tables | ✅ Sí | Para Bronce (AutoLoader directo), todas las entidades de Plata (ST Acumulativas con AppendFlow) y Dim_Tiempo en Oro |
 | Lakeflow Jobs | ✅ Sí | Orquestación del pipeline |
 | Delta Lake | ✅ Sí | Formato de almacenamiento |
 | `F.sha2()` | ✅ Sí | Para hashes SHA2-256/512 |
@@ -746,7 +762,7 @@ F.sha2(F.concat_ws("|", col1.cast("string"), col2.cast("string")), 256)
 # Para hashes simples con F.hash() — SIEMPRE cast a long antes de abs
 F.abs(F.hash(col1, col2).cast("long"))
 
-# Decorador de materialized view con nombre de 3 partes
+# PATRÓN LEGADO — NO USAR para Bronce ni Plata
 @dp.materialized_view(
     name=f"{catalogo}.{esquema}.nombre_vista",
     table_properties={"pipelines.autoOptimize.zOrderCols": "col1"},

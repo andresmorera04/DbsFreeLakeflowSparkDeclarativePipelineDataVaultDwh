@@ -19,7 +19,7 @@ from utilities.LSDPConfiguracion import (
 from utilities.LSDPUtilidadPrincipal import (
     calcular_hash_hub,
     calcular_hash_diferenciador,
-    procesar_satellite,
+    procesar_satellite_transaccional,
     clasificar_por_umbral,
 )
 
@@ -56,7 +56,7 @@ dp.create_streaming_table(
 
 # ─── Lectura única de Bronce (streaming para append_flow) ─────────────────
 def _leer_trxpfl():
-    return dp.read_stream("TRXPFL_temp")
+    return dp.read_stream(_fuente)
 
 
 # ─── Sat_Transaccion_DatosEstables ───────────────────────────────────────
@@ -76,6 +76,7 @@ def sat_transaccion_datos_estables():
 
     datos = df.select(
         hash_transaccion.alias("Hash_Transaccion"),
+        F.col("TRXDT").alias("fecha_transaccion"),
         F.col("TRXTYP").alias("tipo_transaccion"),
         F.col("TRXCUR").alias("moneda_transaccion"),
         F.col("TRXST").alias("estado_transaccion"),
@@ -109,7 +110,7 @@ def sat_transaccion_datos_estables():
     )
 
     cols_negocio = [
-        F.col("tipo_transaccion"), F.col("moneda_transaccion"), F.col("estado_transaccion"),
+        F.col("fecha_transaccion"), F.col("tipo_transaccion"), F.col("moneda_transaccion"), F.col("estado_transaccion"),
         F.col("canal_transaccion"), F.col("descripcion_transaccion"), F.col("referencia_externa"),
         F.col("secuencia_transaccion"), F.col("monto_maximo"), F.col("monto_minimo"),
         F.col("fecha_valor"), F.col("fecha_procesamiento"), F.col("fecha_liquidacion"),
@@ -129,12 +130,13 @@ def sat_transaccion_datos_estables():
     datos = datos.withColumn("FechaRegistro", F.current_timestamp())
     datos = datos.withColumn("FuenteDatos", F.lit(_fuente))
 
-    cambios = procesar_satellite(
+    cambios = procesar_satellite_transaccional(
         spark, _catalogo_plata, _esquema_plata,
-        "Sat_Transaccion_DatosEstables", "Hash_Transaccion", datos,
+        "Sat_Transaccion_DatosEstables", "Hash_Transaccion", "fecha_transaccion", datos,
     )
     return cambios.select(
         "FechaRegistro", "Hash_Transaccion",
+        "fecha_transaccion",
         "tipo_transaccion", "moneda_transaccion", "estado_transaccion",
         "canal_transaccion", "descripcion_transaccion", "referencia_externa",
         "secuencia_transaccion", "monto_maximo", "monto_minimo",
@@ -214,9 +216,9 @@ def sat_transaccion_montos():
     datos = datos.withColumn("FechaRegistro", F.current_timestamp())
     datos = datos.withColumn("FuenteDatos", F.lit(_fuente))
 
-    cambios = procesar_satellite(
+    cambios = procesar_satellite_transaccional(
         spark, _catalogo_plata, _esquema_plata,
-        "Sat_Transaccion_Montos", "Hash_Transaccion", datos,
+        "Sat_Transaccion_Montos", "Hash_Transaccion", "fecha_transaccion", datos,
     )
     return cambios.select(
         "FechaRegistro", "Hash_Transaccion",
