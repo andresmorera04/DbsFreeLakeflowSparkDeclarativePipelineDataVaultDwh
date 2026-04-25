@@ -5,7 +5,7 @@ Laboratorio avanzado de ingeniería de datos que construye un **Data Warehouse**
 ## Capacidades Principales
 
 1. **Ingesta incremental** con AutoLoader (Medalla de Bronce) — detección automática de archivos nuevos sin reprocesar anteriores.
-2. **Modelado Data Vault 2.0 (Raw Vault)** en Medalla de Plata — Hubs y Links como Materialized Views (tablas de referencia idempotentes); Satellites como Streaming Tables Acumulativas con Append Flow (procesamiento estrictamente Append-Only que preserva historial inmutable y solo inserta cambios detectados por `Hash_Diferenciador`).
+2. **Modelado Data Vault 2.0 (Raw Vault)** en Medalla de Plata — **todas las entidades** (Hubs, Links y Satellites) como Streaming Tables Acumulativas con `dp.create_streaming_table()` + `@dp.append_flow()`. Hubs y Links usan LEFT ANTI JOIN para deduplicación incremental (funciones `procesar_hub()` y `procesar_link()`). Satellites usan `procesar_satellite()` (por `Hash_Diferenciador`) o `procesar_satellite_transaccional()` (por hash + fecha). Todo el procesamiento es estrictamente Append-Only, preserva historial inmutable.
 3. **Modelo Estrella dimensional** en Medalla de Oro — dimensiones Tipo 1 y tabla de hechos para análisis transaccional en ATMs.
 4. **Parametrización completa** — cero valores hard-coded; todo se configura vía parámetros del pipeline LSDP.
 5. **Compatibilidad total** con Databricks Free Edition Serverless Compute.

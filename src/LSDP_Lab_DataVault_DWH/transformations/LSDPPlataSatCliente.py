@@ -70,7 +70,7 @@ dp.create_streaming_table(
 
 # ─── Lectura única de Bronce (streaming para append_flow) ─────────────────
 def _leer_cmstfl():
-    return dp.read_stream("CMSTFL_temp")
+    return dp.read_stream(_fuente)
 
 
 # ─── Sat_Cliente_DatosEstables ────────────────────────────────────────────

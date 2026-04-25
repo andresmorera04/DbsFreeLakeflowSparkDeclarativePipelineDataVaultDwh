@@ -62,7 +62,7 @@ dp.create_streaming_table(
 
 # ─── Lectura única de Bronce (streaming para append_flow) ─────────────────
 def _leer_blncfl():
-    return dp.read_stream("BLNCFL_temp")
+    return dp.read_stream(_fuente)
 
 
 # ─── Sat_Operacion_DatosEstables ─────────────────────────────────────────

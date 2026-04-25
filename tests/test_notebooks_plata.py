@@ -92,13 +92,19 @@ def test_todos_importan_utilidades():
         assert "LSDPUtilidadPrincipal" in codigo, f"{nombre}: falta import de utilidades"
 
 
-# ─── Hubs — decorador MV y patrón ────────────────────────────────────────────
+# ─── Hubs — decorador ST+append_flow y patrón ──────────────────────────────────────
 
 
-def test_hubs_usan_materialized_view():
+def test_hubs_usan_create_streaming_table():
     for nombre in HUBS:
         codigo = _codigo(nombre)
-        assert "@dp.materialized_view(" in codigo, f"{nombre}: falta @dp.materialized_view"
+        assert "dp.create_streaming_table(" in codigo, f"{nombre}: falta dp.create_streaming_table"
+
+
+def test_hubs_usan_append_flow():
+    for nombre in HUBS:
+        codigo = _codigo(nombre)
+        assert "@dp.append_flow(" in codigo, f"{nombre}: falta @dp.append_flow"
 
 
 def test_hubs_nombre_3_partes():
@@ -115,28 +121,16 @@ def test_hubs_usan_cluster_by():
         assert "FechaRegistro" in codigo, f"{nombre}: cluster_by debe incluir FechaRegistro"
 
 
-def test_hubs_usan_spark_read_table():
+def test_hubs_usan_dp_read_stream():
     for nombre in HUBS:
         codigo = _codigo(nombre)
-        assert "spark.read.table(" in codigo, f"{nombre}: falta spark.read.table"
+        assert "dp.read_stream(" in codigo, f"{nombre}: falta dp.read_stream"
 
 
-def test_hubs_usan_current_timestamp():
+def test_hubs_usan_procesar_hub():
     for nombre in HUBS:
         codigo = _codigo(nombre)
-        assert "current_timestamp" in codigo, f"{nombre}: falta F.current_timestamp()"
-
-
-def test_hubs_usan_sha2_para_hash():
-    for nombre in HUBS:
-        codigo = _codigo(nombre)
-        assert "calcular_hash_hub" in codigo, f"{nombre}: falta calcular_hash_hub"
-
-
-def test_hubs_usan_drop_duplicates():
-    for nombre in HUBS:
-        codigo = _codigo(nombre)
-        assert "dropDuplicates" in codigo, f"{nombre}: falta dropDuplicates"
+        assert "procesar_hub(" in codigo, f"{nombre}: falta procesar_hub"
 
 
 def test_hubs_usan_fuente_datos():
@@ -198,13 +192,19 @@ def test_hubs_no_propagan_columnas_bronce():
             assert f"F.col('{col}')" not in codigo, f"{nombre}: no debe acceder a columna de Bronce '{col}'"
 
 
-# ─── Links — decorador MV y patrón ───────────────────────────────────────────
+# ─── Links — decorador ST+append_flow y patrón ──────────────────────────────────────
 
 
-def test_links_usan_materialized_view():
+def test_links_usan_create_streaming_table():
     for nombre in LINKS:
         codigo = _codigo(nombre)
-        assert "@dp.materialized_view(" in codigo, f"{nombre}: falta @dp.materialized_view"
+        assert "dp.create_streaming_table(" in codigo, f"{nombre}: falta dp.create_streaming_table"
+
+
+def test_links_usan_append_flow():
+    for nombre in LINKS:
+        codigo = _codigo(nombre)
+        assert "@dp.append_flow(" in codigo, f"{nombre}: falta @dp.append_flow"
 
 
 def test_links_nombre_3_partes():
@@ -220,16 +220,16 @@ def test_links_usan_cluster_by():
         assert "cluster_by" in codigo
 
 
-def test_links_usan_spark_read_table():
+def test_links_usan_dp_read_stream():
     for nombre in LINKS:
         codigo = _codigo(nombre)
-        assert "spark.read.table(" in codigo
+        assert "dp.read_stream(" in codigo, f"{nombre}: falta dp.read_stream"
 
 
-def test_links_usan_drop_duplicates():
+def test_links_usan_procesar_link():
     for nombre in LINKS:
         codigo = _codigo(nombre)
-        assert "dropDuplicates" in codigo
+        assert "procesar_link(" in codigo, f"{nombre}: falta procesar_link"
 
 
 def test_link_cliente_operacion_columnas():
@@ -285,9 +285,13 @@ def test_satellites_tienen_expectations_hash_diferenciador():
 
 
 def test_satellites_usan_procesar_satellite():
-    for nombre in SATELLITES:
+    """SatCliente y SatOperacion usan procesar_satellite; SatTransaccion usa procesar_satellite_transaccional."""
+    for nombre in ["SatCliente", "SatOperacion"]:
         codigo = _codigo(nombre)
         assert "procesar_satellite(" in codigo, f"{nombre}: falta procesar_satellite"
+    # SatTransaccion usa la variante transaccional
+    codigo_trx = _codigo("SatTransaccion")
+    assert "procesar_satellite_transaccional(" in codigo_trx, "SatTransaccion: falta procesar_satellite_transaccional"
 
 
 def test_satellites_usan_hash_diferenciador():
@@ -297,10 +301,11 @@ def test_satellites_usan_hash_diferenciador():
         assert "calcular_hash_diferenciador" in codigo
 
 
-def test_satellites_usan_spark_readstream_table():
+def test_satellites_usan_dp_read_stream():
+    """Todos los Satellites deben leer Bronce con dp.read_stream()."""
     for nombre in SATELLITES:
         codigo = _codigo(nombre)
-        assert "spark.readStream.table(" in codigo
+        assert "dp.read_stream(" in codigo, f"{nombre}: falta dp.read_stream"
 
 
 def test_satellites_no_propagan_columnas_bronce():
