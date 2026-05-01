@@ -183,19 +183,40 @@ def procesar_satellite_transaccional(
     fecha_col: str,
     datos_nuevos: DataFrame,
 ) -> DataFrame:
-    """Acumulación histórica Append-Only para Satellites transaccionales.
+    """Primera-escritura-gana Append-Only para Satellites transaccionales (B.1).
 
-    Deduplica por la combinación hash_col + fecha_col usando LEFT ANTI JOIN.
-    NO aplica ROW_NUMBER ni reduce a último registro — acumula historia completa.
-    Hash_Diferenciador se preserva en el resultado para trazabilidad pero NO
-    participa en la deduplicación.
+    Una transacción ATM es un hecho inmutable: su estado queda fijado en el
+    momento en que se confirma. Por tanto el grano de estos Satellites es
+    exactamente **una fila por** ``hash_col`` (= IdentificadorTransaccion hasheado).
 
-    Primera ejecución (tabla no existe): retorna todos los registros entrantes.
+    Deduplicación:
+      1. **Intra-batch** — ``dropDuplicates([hash_col])``: colapsa filas
+         duplicadas dentro del mismo microbatch (p. ej. AutoLoader re-entrega
+         el mismo archivo parquet).
+      2. **Cross-batch** — LEFT ANTI JOIN por ``[hash_col]`` contra el snapshot
+         actual de la tabla: descarta transacciones ya registradas en ejecuciones
+         previas, independientemente de si ``fecha_transaccion`` llegó con un
+         valor distinto (re-generaciones de laboratorio, re-ingestas del mismo
+         parquet con fechas diferentes).
+
+    Motivación del cambio respecto a la versión anterior:
+      La versión previa deduplicaba por ``[hash_col, fecha_col]``. Como el
+      generador de lab asigna un ``TRXDT`` diferente por cada ejecución, el
+      mismo ``TRXID`` con fecha nueva pasaba el ANTI JOIN como "registro
+      nuevo", acumulando N versiones en el satélite y propagando ``Q = N``
+      en ``Hec_Transacciones_ATM`` (Q = 11 observado en producción de lab).
+
+    Nota: ``fecha_col`` se mantiene en la firma por compatibilidad con los
+    sitios de llamada existentes; no participa en la lógica de deduplicación.
+
+    Primera ejecución (tabla no existe): retorna todos los registros entrantes
+    deduplicados intra-batch.
     """
     nombre_completo = f"{catalogo_plata}.{esquema_plata}.{nombre_sat}"
+    datos_nuevos = datos_nuevos.dropDuplicates([hash_col])
     try:
-        existente = spark.read.table(nombre_completo).select(hash_col, fecha_col)
-        return datos_nuevos.join(existente, [hash_col, fecha_col], "left_anti")
+        existente = spark.read.table(nombre_completo).select(hash_col)
+        return datos_nuevos.join(existente, [hash_col], "left_anti")
     except Exception as exc:
         from pyspark.sql.utils import AnalysisException
         if isinstance(exc, AnalysisException):

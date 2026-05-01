@@ -8,7 +8,7 @@
   1. Las 3 funciones helper existentes en `LSDPUtilidadPrincipal.py` (`calcular_hash_hub`, `calcular_hash_diferenciador`, `reordenar_columnas_lc`) cubren el 70% de la lógica de Plata; se necesitan 2 funciones nuevas (detección de cambios + clasificación por umbrales).
   2. El patrón `procesar_satellite` documentado en SYSTEM.md usa `Window + ROW_NUMBER + left join` para detección de cambios — es 100% compatible con Serverless (sin RDD ni cache).
   3. Discrepancias verificadas en datos reales: TRXID es StringType (no LongType), TRXRK/TRXFR escala 0-100 (no 0-1), Sat_Operacion_FechasEvento tiene 19 campos DateType (BLNCFL tiene 19 fechas mapeables, no 34).
-  4. **CRÍTICO**: Los Satellites NO pueden ser Materialized Views — MV recalcula todo en cada ejecución, destruyendo la semántica Append-Only de Data Vault 2.0. Se adopta el patrón `dp.create_streaming_table()` + `@dp.append_flow()` (probado en Dim_Tiempo de SYSTEM.md) que preserva registros existentes y solo agrega cambios detectados.
+  4. **CRÍTICO**: Los Satellites NO pueden ser Materialized Views — MV recalcula todo en cada ejecución, destruyendo la semántica Append-Only de Data Vault 2.0. Se adopta el patrón `dp.create_streaming_table()` + `@dp.append_flow()` (alineado con los principios DV2.0 documentados en `tech.md`) que preserva registros existentes y solo agrega cambios detectados.
 
 ## Registro de Investigación
 
@@ -30,16 +30,16 @@
 ### Materialized Views vs Streaming Tables para Plata
 
 - **Contexto**: Definir el tipo de tabla LSDP correcto para Hubs, Links y Satellites.
-- **Fuentes Consultadas**: SYSTEM.md (secciones "API de Decoradores", "Patrón de Detección de Cambios", "Dim_Tiempo acumulativa"), steering tech.md, documentación oficial Databricks LSDP (`ldp-python-ref-streaming-table`, `ldp-python-ref-append-flow`).
+- **Fuentes Consultadas**: SYSTEM.md (secciones "API de Decoradores", "Patrón de Detección de Cambios"), steering tech.md, documentación oficial Databricks LSDP (`ldp-python-ref-streaming-table`, `ldp-python-ref-append-flow`).
 - **Hallazgos**:
   - **Hubs y Links**: `@dp.materialized_view()` — son tablas de referencia idempotentes que se recalculan completamente con cada ejecución (deduplicación de llaves de negocio). No acumulan historial, por lo que el recálculo completo es correcto y eficiente.
   - **Satellites con MV (❌ DESCARTADO)**: Usar `@dp.materialized_view()` para Satellites implica que en CADA ejecución se recalcula la tabla completa. Esto viola el principio fundamental de Data Vault 2.0 donde los Satellites son estrictamente Append-Only y acumulan historial. A medida que crece el volumen (registros de cambios acumulados), el recálculo completo deteriora gravemente el rendimiento haciendo el pipeline inviable.
-  - **Satellites con ST + Append Flow (✅ SELECCIONADO)**: El patrón `dp.create_streaming_table()` + `@dp.append_flow()` ya está probado y aprobado en SYSTEM.md para la `Dim_Tiempo` (Oro). Permite:
+  - **Satellites con ST + Append Flow (✅ SELECCIONADO)**: El patrón `dp.create_streaming_table()` + `@dp.append_flow()` es el correcto por semántica DV2.0 (Append-Only real). Permite:
     1. Persistencia permanente: los registros existentes del Satellite nunca se tocan.
     2. Solo se agregan registros nuevos/cambiados en cada ejecución.
     3. La función `procesar_satellite()` lee el Satellite existente vía `spark.read.table()` y retorna SOLO los cambios detectados.
     4. El `@dp.append_flow()` inserta únicamente esos cambios en la Streaming Table.
-  - **`@dp.append_flow()` acepta DataFrames batch**: La documentación oficial de Databricks indica que por defecto `@dp.append_flow()` espera un streaming DataFrame, pero con `once=True` acepta batch. Sin embargo, el patrón aprobado de `Dim_Tiempo` en SYSTEM.md usa batch sin `once=True` y se ejecuta en cada pipeline run — este es el comportamiento requerido para Satellites.
+  - **`@dp.append_flow()` acepta DataFrames batch**: La documentación oficial de Databricks indica que por defecto `@dp.append_flow()` espera un streaming DataFrame, pero con `once=True` acepta batch. Sin embargo, el patrón aprobado para Satellites de Plata usa batch sin `once=True` y se ejecuta en cada pipeline run — este es el comportamiento requerido para detectar cambios acumulativos.
   - **`dp.create_streaming_table()` soporta expectations**: Confirmado en la API oficial — acepta `expect_all`, `expect_all_or_drop`, `expect_all_or_fail` como parámetros directos (no como decoradores sobre el append_flow).
   - **Liquid Clustering soportado**: `dp.create_streaming_table()` acepta `cluster_by` y `table_properties`.
 - **Implicaciones**:
@@ -89,7 +89,7 @@
 | Opción | Descripción | Fortalezas | Riesgos / Limitaciones | Notas |
 |--------|-------------|-----------|------------------------|-------|
 | MV para todos (Hubs, Links, Satellites) | Todas las tablas como `@dp.materialized_view()` | Consistencia de patrón; LSDP gestiona dependencias | **FATAL**: MV recalcula completo en cada ejecución → destruye historial acumulado de Satellites; rendimiento inviable a escala | **❌ Descartado** — viola principio Append-Only de DV2.0 |
-| MV para Hubs/Links + ST+AppendFlow para Satellites | Hubs/Links como MV; Satellites como `dp.create_streaming_table()` + `@dp.append_flow()` | Append-Only real; registros existentes nunca se tocan; solo cambios detectados se agregan; patrón probado en Dim_Tiempo (SYSTEM.md) | Dos patrones de tabla distintos en Plata; la detección de cambios vía `procesar_satellite()` requiere leer el Satellite existente en cada ejecución | **✅ Seleccionado** — respeta DV2.0; escalable; patrón aprobado en SYSTEM.md |
+  | MV para Hubs/Links + ST+AppendFlow para Satellites | Hubs/Links como MV; Satellites como `dp.create_streaming_table()` + `@dp.append_flow()` | Append-Only real; registros existentes nunca se tocan; solo cambios detectados se agregan; patrón correcto por semántica DV2.0 | Dos patrones de tabla distintos en Plata; la detección de cambios vía `procesar_satellite()` requiere leer el Satellite existente en cada ejecución | **✅ Seleccionado** — respeta DV2.0; escalable; patrón aprobado en SYSTEM.md |
 | ST con `@dp.table()` + `spark.readStream` para Satellites | Satellites como `@dp.table()` con `spark.readStream.table()` desde MV de Bronce | Streaming incremental nativo; checkpoints automáticos | La MV de Bronce se recalcula completo (snapshot) → `readStream` puede tratar TODO como nuevo en cada ejecución; no hay control fino de detección de cambios por `Hash_Diferenciador` | **❌ Descartado** — la fuente MV Bronce no es un stream incremental real |
 
 ## Decisiones de Diseño
@@ -108,7 +108,7 @@
   - **Satellites**: Data Vault 2.0 requiere Append-Only real. Los registros existentes no deben ser tocados ni reprocesados. El patrón `dp.create_streaming_table()` + `@dp.append_flow()`:
     - Preserva permanentemente todos los registros existentes.
     - Solo agrega registros con cambios detectados (`Hash_Diferenciador` diferente).
-    - Es el mismo patrón aprobado para `Dim_Tiempo` en SYSTEM.md (R10).
+    - Es el patrón correcto según la semántica DV2.0 documentada en `tech.md` y aprobada para esta feature.
     - La función `procesar_satellite()` lee el Satellite via `spark.read.table()`, obtiene el último `Hash_Diferenciador` por entidad (Window + ROW_NUMBER), y retorna SOLO los registros nuevos/cambiados.
     - El `@dp.append_flow()` inserta exclusivamente esos cambios — NO recarga la tabla completa.
   - **Opción 3 descartada**: Las MV de Bronce se recalculan completamente (snapshot del último día), por lo que `spark.readStream.table()` sobre ellas no ofrece incrementalidad real — podría inyectar todos los registros como "nuevos" en cada ejecución.
@@ -164,3 +164,51 @@
 - steering/tech.md — Stack tecnológico, restricciones y patrones LSDP.
 - steering/structure.md — Convenciones de nombrado y organización del repositorio.
 - Incremento 1 (bronce-utilities-ingesta) — Patrones de notebooks, diseño de utilidades, MV de Bronce como fuentes.
+
+---
+
+## Hallazgo OPT-001 — Self-anti-join oculto en `@dp.append_flow` del linaje transaccional (2026-04-28)
+
+### Evidencia
+
+Análisis del log `New_Query_2026_04_13_15_45_26-2.csv` (update `0904d79f-23aa-4bbd-9530-3f44e07eee64`, 28-abr-2026, 403 eventos):
+
+| Flujo | Duración observada | `num_output_rows` |
+|---|---|---|
+| `bronce.lab2.trxpfl` (AutoLoader) | ~64 s | 11.700.300 |
+| `bronce.lab2.hub_transaccion_flow` | ~12 min 7 s | 11.700.300 |
+| `bronce.lab2.link_cliente_transaccion_flow` | ~14 min 9 s | 11.700.300 |
+| `bronce.lab2.sat_transaccion_datos_estables` | ~17 min 56 s | 11.700.300 |
+| `bronce.lab2.sat_transaccion_montos` | ~18 min 22 s | 11.700.300 |
+
+Las ventanas `executor_time_ms` reportadas cada 60 s mostraron saturación sostenida (~60 000 ms/min) durante todo el intervalo, con picos de 230 000 ms (spill).
+
+### Causa raíz
+
+`@dp.append_flow` declara intención de append, pero la transformación retornada por cada flow ejecutaba `procesar_hub` / `procesar_link` / `procesar_satellite_transaccional`, que internamente hacen:
+
+```python
+existente = spark.read.table(nombre_completo).select(hash_col)   # batch read del snapshot
+return datos_nuevos.join(existente, [hash_col], "left_anti")     # full anti-join
+```
+
+Esto convierte el flow en un *stateful self-anti-join* sobre la tabla destino completa por cada microbatch, con dos `Exchange hashpartitioning(Hash_Transaccion)` sobre llaves SHA2-256 (64 B). Los Satellites además calculan SHA2-512 sobre 30 columnas concatenadas por fila, y los 4 consumidores abren `DeltaSource[TRXPFL]` independientes (4 lecturas paralelas del mismo Bronce).
+
+### Premisa que habilita la solución
+
+`TRXID` es globalmente único entre ejecuciones, por lo que el anti-join no aporta valor: AutoLoader ya garantiza *exactly-once delivery* y la unicidad del origen elimina la posibilidad de duplicados cross-batch.
+
+### Mitigación adoptada (OPT-001)
+
+Migración del linaje transaccional a un patrón **CDC nativo** apoyado en el Change Data Feed que ya estaba habilitado en TRXPFL (`delta.enableChangeDataFeed = "true"`):
+
+- Vista compartida `@dp.view vista_trxpfl_cdf` que lee `readChangeFeed=true` filtrando `_change_type ∈ {insert, update_postimage}` y expone `_commit_version` y `_commit_timestamp` como `VersionCarga` y `FechaCargaBronce`.
+- Hub, Link y Satellites transaccionales pasan a leer la vista y descartan los helpers de deduplicación.
+- Los Satellites incorporan las dos columnas CDF, dotando al Data Vault de auditoría a nivel de commit Delta.
+
+### Aprendizajes
+
+1. `@dp.append_flow` no garantiza eficiencia: si la transformación referencia el destino, el motor materializa el snapshot completo en cada microbatch.
+2. `dp.view` permite consolidar lecturas compartidas y planificar un único origen para varios consumidores (vs. múltiples `DeltaSource` paralelos sobre la misma tabla).
+3. El Change Data Feed es el camino natural para alimentar Data Vault en LSDP cuando el origen ya es una Delta Streaming Table: entrega un *delta* explícito por commit y permite trazabilidad nativa a través de `_commit_version`/`_commit_timestamp`.
+4. La deduplicación cross-batch es una decisión de dominio, no un default arquitectónico: cuando la llave de negocio es globalmente única en el origen, debe omitirse para no convertir un append en un join completo.

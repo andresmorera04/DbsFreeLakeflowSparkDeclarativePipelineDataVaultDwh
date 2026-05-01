@@ -41,7 +41,8 @@ from pyspark.sql.types import (
 # ==============================================================================
 # PASO 2: DEFINICION DE WIDGETS (PARAMETROS DE ENTRADA)
 # ==============================================================================
-# 11 widgets segun contrato. fechaTransaccion es obligatorio sin valor por defecto.
+# 12 widgets segun contrato. fechaTransaccion es obligatorio sin valor por defecto.
+# rutaRelativaParquetsExistentes es opcional: vacio indica primer archivo (secuencia desde 1).
 # ==============================================================================
 
 dbutils.widgets.text("catalogoParametro",          "control",                          "Catalogo de la tabla Parametros")
@@ -51,6 +52,7 @@ dbutils.widgets.text("cantidadTransacciones",      "150000",                    
 dbutils.widgets.text("fechaTransaccion",           "",                                 "Fecha de transacciones formato YYYY-MM-DD")
 dbutils.widgets.text("rutaRelativaTransaccional",  "LSDP_Base/As400/Transaccional/",   "Ruta relativa destino del parquet transaccional")
 dbutils.widgets.text("rutaRelativaMaestroCliente", "LSDP_Base/As400/MaestroCliente/",  "Ruta relativa del parquet CMSTFL existente")
+dbutils.widgets.text("rutaRelativaParquetsExistentes", "",                             "Ruta relativa de parquets TRXPFL existentes para continuar secuencia (vacio=primer archivo)")
 dbutils.widgets.text("montoMinimo",                "10",                               "Monto minimo para columnas DoubleType")
 dbutils.widgets.text("montoMaximo",                "100000",                           "Monto maximo para columnas DoubleType")
 dbutils.widgets.text("numeroParticiones",          "8",                                "Numero de particiones para coalesce")
@@ -64,6 +66,7 @@ cantidad_transacciones_str = dbutils.widgets.get("cantidadTransacciones")
 fecha_transaccion_str      = dbutils.widgets.get("fechaTransaccion")
 ruta_relativa_transac      = dbutils.widgets.get("rutaRelativaTransaccional")
 ruta_relativa_maestro      = dbutils.widgets.get("rutaRelativaMaestroCliente")
+ruta_relativa_existentes   = dbutils.widgets.get("rutaRelativaParquetsExistentes")
 monto_minimo_str           = dbutils.widgets.get("montoMinimo")
 monto_maximo_str           = dbutils.widgets.get("montoMaximo")
 numero_particiones_str     = dbutils.widgets.get("numeroParticiones")
@@ -165,15 +168,23 @@ if tipo_storage not in ("Volume", "AmazonS3"):
 # ==============================================================================
 
 if tipo_storage == "Volume":
-    catalogo_volume      = dict_parametros.get("catalogoVolume", "")
-    esquema_volume       = dict_parametros.get("esquemaVolume", "")
-    nombre_volume        = dict_parametros.get("nombreVolume", "")
+    catalogo_volume       = dict_parametros.get("catalogoVolume", "")
+    esquema_volume        = dict_parametros.get("esquemaVolume", "")
+    nombre_volume         = dict_parametros.get("nombreVolume", "")
     ruta_completa_transac = f"/Volumes/{catalogo_volume}/{esquema_volume}/{nombre_volume}/{ruta_relativa_transac}"
     ruta_completa_maestro = f"/Volumes/{catalogo_volume}/{esquema_volume}/{nombre_volume}/{ruta_relativa_maestro}"
+    ruta_completa_existentes = (
+        f"/Volumes/{catalogo_volume}/{esquema_volume}/{nombre_volume}/{ruta_relativa_existentes.strip()}"
+        if ruta_relativa_existentes.strip() else None
+    )
 elif tipo_storage == "AmazonS3":
     bucket_s3             = dict_parametros.get("bucketS3", "")
     ruta_completa_transac = f"s3://{bucket_s3}/{ruta_relativa_transac}"
     ruta_completa_maestro = f"s3://{bucket_s3}/{ruta_relativa_maestro}"
+    ruta_completa_existentes = (
+        f"s3://{bucket_s3}/{ruta_relativa_existentes.strip()}"
+        if ruta_relativa_existentes.strip() else None
+    )
 else:
     raise ValueError(
         f"ERROR: TipoStorage '{tipo_storage}' no es valido. Valores aceptados: 'Volume', 'AmazonS3'"
@@ -206,9 +217,10 @@ print("--- Parametros Tabla Parametros ---")
 for clave, valor in dict_parametros.items():
     print(f"  {clave:<30} : {valor}")
 print("--- Storage ---")
-print(f"  TipoStorage           : {tipo_storage}")
-print(f"  Ruta destino transac  : {ruta_completa_transac}")
-print(f"  Ruta maestro CMSTFL   : {ruta_completa_maestro}")
+print(f"  TipoStorage                       : {tipo_storage}")
+print(f"  Ruta destino transac              : {ruta_completa_transac}")
+print(f"  Ruta maestro CMSTFL               : {ruta_completa_maestro}")
+print(f"  Ruta parquets existentes          : {ruta_completa_existentes if ruta_completa_existentes else '(ninguna — primer archivo)'}")
 print("=" * 70)
 
 # COMMAND ----------
@@ -230,6 +242,32 @@ except Exception as e:
 df_custids_validos = df_maestro.select("CUSTID").distinct()
 total_clientes = df_custids_validos.count()
 print(f"Maestro de Clientes cargado: {total_clientes} CUSTIDs unicos")
+
+# COMMAND ----------
+
+# ==============================================================================
+# PASO 8.5: DETERMINACION DEL ID DE INICIO PARA TRXID IRREPETIBLE
+# ==============================================================================
+# Si se provee una ruta de parquets existentes se lee el maximo de TRXSQ
+# (que equivale al sufijo numerico de TRXID) y la nueva secuencia inicia
+# en max_trxsq + 1, garantizando unicidad global entre ejecuciones.
+# Si la ruta esta vacia se asume que es el primer archivo y se inicia en 1.
+# ==============================================================================
+
+if ruta_completa_existentes:
+    try:
+        df_existentes = spark.read.parquet(ruta_completa_existentes)
+        max_trxsq     = df_existentes.agg(F.max(F.col("TRXSQ"))).collect()[0][0]
+        id_inicio     = int(max_trxsq) + 1 if max_trxsq is not None else 1
+    except Exception as e:
+        raise ValueError(
+            f"ERROR: No se pudo leer los parquets TRXPFL existentes en '{ruta_completa_existentes}'. "
+            f"Verifique que la ruta es correcta y los archivos existen. Detalle: {e}"
+        )
+    print(f"Parquets existentes leidos. TRXSQ maximo encontrado: {max_trxsq}. Nueva secuencia inicia en: {id_inicio}")
+else:
+    id_inicio = 1
+    print("Sin parquets existentes indicados. La secuencia TRXID inicia en 1.")
 
 # COMMAND ----------
 
@@ -290,7 +328,10 @@ def dias_a_fecha_trx(anio_inicio, anio_fin, semilla_str):
     return F.date_add(F.lit("1970-01-01").cast(DateType()), epoch_col)
 
 # Generar DataFrame base
-df_base_trx = spark.range(1, cantidad_transacciones + 1)
+# El rango inicia en id_inicio (calculado en PASO 8.5) para que TRXID
+# sea irrepetible entre ejecuciones independientemente de cuantos parquets
+# hayan sido generados previamente.
+df_base_trx = spark.range(id_inicio, id_inicio + cantidad_transacciones)
 
 # Agregar valor random 0-100 para asignacion de tipo de transaccion
 df_base_trx = df_base_trx.withColumn(
@@ -467,6 +508,8 @@ print("=" * 70)
 print(f"  Registros escritos    : {registros_escritos}")
 print(f"  Columnas              : {len(df_trxpfl.columns)}")
 print(f"  Ruta destino          : {ruta_completa_transac}")
+print(f"  id_inicio (TRXSQ)     : {id_inicio}")
+print(f"  TRXSQ rango           : {id_inicio} — {id_inicio + cantidad_transacciones - 1}")
 print(f"  Tiempo escritura      : {tiempo_escritura}s")
 print(f"  Tiempo total          : {tiempo_total}s")
 print("=" * 70)

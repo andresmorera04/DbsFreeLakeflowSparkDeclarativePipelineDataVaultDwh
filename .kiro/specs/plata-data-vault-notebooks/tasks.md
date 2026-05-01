@@ -175,6 +175,17 @@
   - Confirmar que constantes `UMBRAL_*`, `TIPO_DATM`, `TIPO_CATM` y `HASH_*` se referencian desde `LSDPConfiguracion` y nunca están hardcodeadas
   - _Requirements: 1.3, 1.4, 14.1, 14.2, 14.3, 14.4, 14.5_
 
+- [x] 10.3 Habilitar Change Data Feed en TODAS las streaming tables de Plata sin excepción
+  - Requisito de incrementabilidad para las MV de Oro: Enzyme requiere CDF en todas las fuentes upstream para evitar `COMPLETE_RECOMPUTE`. Los Sats ya lo tenían; ahora se exige también para Hubs y Links.
+  - Aplicar `table_properties` con `delta.enableChangeDataFeed=true` (junto a `delta.autoOptimize.autoCompact`, `delta.autoOptimize.optimizeWrite`, `delta.deletedFileRetentionDuration` y `delta.logRetentionDuration`) en `dp.create_streaming_table` de:
+    - `LSDPPlataHubCliente.py` → `Hub_Cliente`
+    - `LSDPPlataHubOperacion.py` → `Hub_Operacion`
+    - `LSDPPlataHubTransaccion.py` → `Hub_Transaccion`
+    - `LSDPPlataLinkClienteOperacion.py` → `Link_Cliente_Operacion`
+    - `LSDPPlataLinkClienteTransaccion.py` → `Link_Cliente_Transaccion`
+  - Test estático: `tests/test_notebooks_plata.py::test_todos_habilitan_change_data_feed` exige `table_properties` y `"delta.enableChangeDataFeed": "true"` en los 8 notebooks de Plata (3 Hubs + 2 Links + 3 Sats).
+  - _Requirements: 12.x (cross-stage), enabler de spec `oro-modelo-estrella-mv-tiempo` tarea 6.2_
+
 ---
 
 # Hallazgo Crítico — Cierre del Incremento (FIND-001)
@@ -232,3 +243,18 @@ El hotfix resuelve el error inmediato, pero introduce una consideración de dise
 - **Rediseñar el flujo Bronce→Plata Satellites**: Considerar si el patrón `MV snapshot → ST satellite` debe reemplazarse definitivamente por `ST temp → ST satellite`, o si se requiere una estrategia intermedia (e.g., `skipChangeCommits`, particionamiento por fecha en la lectura streaming).
 - **Validar comportamiento incremental**: Confirmar que el checkpoint de streaming de `dp.read_stream()` sobre tablas temporales LSDP funciona correctamente en ejecuciones incrementales diarias sin reprocesar todo el histórico.
 - **Actualizar el diseño y los requisitos** de la spec para reflejar la decisión arquitectónica final.
+
+---
+
+## Incremento OPT-001 — Linaje transaccional sobre Change Data Feed (2026-04-28)
+
+- [x] Crear `src/LSDP_Lab_DataVault_DWH/transformations/LSDPPlataVistaTRXPFLCDF.py` con `@dp.view vista_trxpfl_cdf` que lee TRXPFL con `readChangeFeed=true`, filtra `_change_type ∈ {insert, update_postimage}` y promueve `_commit_version` → `VersionCarga` y `_commit_timestamp` → `FechaCargaBronce`.
+- [x] Migrar `LSDPPlataHubTransaccion.py`: lectura desde `dp.read_stream("vista_trxpfl_cdf")` y eliminación de la llamada a `procesar_hub` (TRXID es globalmente único).
+- [x] Migrar `LSDPPlataLinkClienteTransaccion.py`: lectura desde la vista CDF y eliminación de `procesar_link`.
+- [x] Migrar `LSDPPlataSatTransaccion.py` (`Sat_Transaccion_DatosEstables` y `Sat_Transaccion_Montos`): lectura desde la vista CDF, eliminación de `procesar_satellite_transaccional` y propagación de `VersionCarga` + `FechaCargaBronce` en el `select` final.
+- [x] Conservar intactas `procesar_satellite/_hub/_link/_satellite_transaccional` en `LSDPUtilidadPrincipal.py` (sigue siendo necesario para el linaje maestro CMSTFL/BLNCFL).
+- [x] Conservar `expect_all_or_fail` / `expect_all_or_drop`, `cluster_by` y `table_properties` de las tablas Plata.
+- [x] Ajustar `tests/test_notebooks_plata.py`: relajar las aserciones de `procesar_hub`/`procesar_link`/`procesar_satellite_transaccional` para el linaje transaccional y añadir 5 tests OPT-001 (existencia y forma de la vista CDF, lectura desde `vista_trxpfl_cdf`, propagación de `VersionCarga`/`FechaCargaBronce`, ausencia de helpers de deduplicación).
+- [x] Ejecutar `pytest -q`: 241/241 pasando.
+- [x] Actualizar `spec.json` con el bloque `optimizations[OPT-001]` y bumpear `updated_at`.
+- [x] Anexar la sección "Incremento OPT-001" a `design.md`, `tasks.md` y `research.md`.

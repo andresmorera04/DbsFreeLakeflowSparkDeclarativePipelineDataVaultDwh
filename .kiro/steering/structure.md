@@ -45,8 +45,10 @@ El proyecto sigue una organización **por medallas** (Bronce → Plata → Oro),
 | Medalla | Tipo | Patrón | Tipo LSDP | Ejemplo |
 |---------|------|--------|-----------|---------|
 | Bronce | Streaming Table persistente | `{Origen}` | `@dp.table()` | `CMSTFL`, `TRXPFL`, `BLNCFL` |
-| Plata | Hub | `Hub_{Entidad}` | `dp.create_streaming_table()` + `@dp.append_flow()` | `Hub_Cliente`, `Hub_Operacion`, `Hub_Transaccion` |
-| Plata | Link | `Link_{Entidad1}_{Entidad2}` | `dp.create_streaming_table()` + `@dp.append_flow()` | `Link_Cliente_Operacion` |
+| Plata | Hub (OPT-001) | `Hub_{Entidad}` | `dp.create_streaming_table()` + `@dp.view` + `dp.create_auto_cdc_flow()` | `Hub_Cliente`, `Hub_Operacion` |
+| Plata | Hub | `Hub_{Entidad}` | `dp.create_streaming_table()` + `@dp.append_flow()` | `Hub_Transaccion` |
+| Plata | Link (OPT-001) | `Link_{Entidad1}_{Entidad2}` | `dp.create_streaming_table()` + `@dp.view` + `dp.create_auto_cdc_flow()` | `Link_Cliente_Operacion` |
+| Plata | Link | `Link_{Entidad1}_{Entidad2}` | `dp.create_streaming_table()` + `@dp.append_flow()` | `Link_Cliente_Transaccion` |
 | Plata | Satellite | `Sat_{Entidad}_{Concepto}` | `dp.create_streaming_table()` + `@dp.append_flow()` | `Sat_Cliente_DatosEstables`, `Sat_Cliente_Montos` |
 | Oro | Dimensión | `Dim_{Nombre}` | Varies | `Dim_Cliente`, `Dim_Operacion`, `Dim_Tiempo` |
 | Oro | Hecho | `Hec_{Nombre}` | Varies | `Hec_Transacciones_ATM` |

@@ -14,11 +14,14 @@
   - _Requirements: 4.2, 4.3, 4.4, 4.8_
 
 - [x] 2. Función de acumulación histórica para Satellites transaccionales
-- [x] 2.1 Implementar la función de deduplicación histórica por hash + fecha para Satellites transaccionales
-  - Crear la función que recibe el SparkSession, los identificadores del catálogo/esquema/tabla, la columna de hash, la columna de fecha y el DataFrame de datos nuevos
-  - Leer la tabla existente del Satellite, ejecutar un LEFT ANTI JOIN por la combinación de hash + fecha, y retornar todos los registros cuya combinación no exista previamente — sin aplicar ROW_NUMBER ni ninguna reducción al último registro
+- [x] 2.1 Implementar la función de deduplicación primera-escritura-gana para Satellites transaccionales (B.1)
+  - Crear la función que recibe el SparkSession, los identificadores del catálogo/esquema/tabla, la columna de hash, la columna de fecha (por compatibilidad de firma) y el DataFrame de datos nuevos
+  - Aplicar `dropDuplicates([hash_col])` **antes** del bloque try/join para deduplicación intra-batch
+  - Leer la tabla existente del Satellite, ejecutar un LEFT ANTI JOIN **exclusivamente** por `[hash_col]`, y retornar todos los registros cuyo `hash_col` no exista previamente — sin aplicar ROW_NUMBER ni ninguna reducción al último registro
   - Preservar la columna Hash_Diferenciador en el DataFrame de salida sin usarla para la deduplicación
-  - Manejar la primera ejecución (tabla inexistente) retornando todos los registros mediante fallback por AnalysisException
+  - `fecha_col` se mantiene en la firma por compatibilidad con los sitios de llamada existentes pero no participa en la lógica de deduplicación
+  - Manejar la primera ejecución (tabla inexistente) retornando todos los registros deduplicados intra-batch mediante fallback por AnalysisException
+  - _Nota B.1_: La versión anterior deduplicaba por `[hash_col, fecha_col]`; se corrigió porque el mismo TRXID con TRXDT diferente (re-generaciones de lab) pasaba el ANTI JOIN como "nuevo", generando Q=11 en `Hec_Transacciones_ATM`
   - _Requirements: 11.3, 11.5, 11.6, 11.7, 11.8, 11.9_
 
 - [x] 3. Simplificación de los notebooks de Bronce
@@ -138,9 +141,51 @@
   - Validar el fallback de primera ejecución retornando todos los registros
   - _Requirements: 4.2, 4.3, 4.4, 4.8_
 
-- [x] 10.3 (P) Implementar tests para la función de acumulación histórica transaccional
-  - Validar que retorna solo registros cuya combinación hash + fecha no existe en la tabla
+- [x] 10.3 (P) Implementar tests para la función de deduplicación primera-escritura-gana transaccional (B.1/B.3)
+  - Validar que retorna solo registros cuyo `hash_col` no existe en la tabla (ANTI JOIN por `[hash_col]` solo)
+  - Validar que el mismo `hash_col` con `fecha_col` distinta es rechazado (primera-escritura-gana)
+  - Validar que `[hash_col, fecha_col]` **no** es la llave de deduplicación (test de regresión contra el bug Q=11)
+  - Validar que `dropDuplicates([hash_col])` se aplica antes del ANTI JOIN (deduplicación intra-batch)
   - Validar que no aplica ROW_NUMBER ni reduce al último registro
   - Validar que Hash_Diferenciador se preserva en el resultado sin participar en la deduplicación
-  - Validar el fallback de primera ejecución retornando todos los registros
+  - Validar el fallback de primera ejecución retornando todos los registros deduplicados intra-batch
   - _Requirements: 11.3, 11.5, 11.6, 11.8, 11.9_
+
+---
+
+## OPT-001: Optimización de Hubs y Links con `dp.create_auto_cdc_flow`
+
+> **Contexto**: Tras analizar el event log del pipeline (ejecución 2026-04-28), se detectó que `procesar_hub()` y `procesar_link()` ejecutaban un `spark.read.table()` completo de la tabla histórica en cada microbatch, generando tablas intermedias de materialización (`__materialization_mat_*`) y un coste O(histórico) en cada ciclo. La solución es delegar la deduplicación al motor LSDP mediante `dp.create_auto_cdc_flow(stored_as_scd_type=1)`.
+>
+> **Entidades afectadas**: Hub_Cliente, Hub_Operacion, Link_Cliente_Operacion.
+> **Entidades no afectadas**: Hub_Transaccion y Link_Cliente_Transaccion conservan `@dp.append_flow()` + `procesar_hub/link()`.
+
+- [x] OPT-001.1 Migrar Hub_Cliente a `dp.create_auto_cdc_flow`
+  - Reemplazar `@dp.append_flow()` + `procesar_hub()` por `@dp.view hub_cliente_src()` + `dp.create_auto_cdc_flow(target=..., source="hub_cliente_src", keys=["IdentificadorCliente"], sequence_by=F.expr("current_timestamp()"), stored_as_scd_type=1)`
+  - Eliminar el import de `procesar_hub` del notebook; conservar `calcular_hash_hub` y `reordenar_columnas_lc`
+  - El `@dp.view` recibe `dp.read_stream(fuente)` y genera `FechaRegistro` con `F.current_timestamp()`; el motor gestiona el MERGE internamente
+  - **`except_column_list` NO se usa**: en `dp.create_auto_cdc_flow` excluye la columna del esquema del target (no la protege de updates), causando `DELTA_COLUMN_NOT_FOUND_IN_SCHEMA` al referenciarla en `cluster_by`. `FechaRegistro` se actualiza en cada MERGE (semántica "última vez vista").
+  - Verificar que los tests de `test_notebooks_plata.py` para Hub_Cliente pasan con el nuevo patrón
+
+- [x] OPT-001.2 Migrar Hub_Operacion a `dp.create_auto_cdc_flow`
+  - Misma estrategia que OPT-001.1; `keys=["IdentificadorCliente", "SecuenciaSaldo"]` (llave compuesta de BLNCFL)
+  - Eliminar el import de `procesar_hub` del notebook; conservar `calcular_hash_hub` y `reordenar_columnas_lc`
+  - Verificar que los tests de `test_notebooks_plata.py` para Hub_Operacion pasan con el nuevo patrón
+
+- [x] OPT-001.3 Migrar Link_Cliente_Operacion a `dp.create_auto_cdc_flow`
+  - Misma estrategia que OPT-001.1; `keys=["Hash_Cliente", "Hash_Operacion"]` (combinación de hashes)
+  - Eliminar el import de `procesar_link` del notebook; conservar `calcular_hash_hub` y `reordenar_columnas_lc`
+  - `except_column_list` no se usa (ver OPT-001.1 para explicación)
+  - `FechaRegistro` se actualiza en cada MERGE (semántica "última vez vista")
+
+- [x] OPT-001.4 Actualizar `test_notebooks_plata.py` para los tres notebooks migrados
+  - `test_hubs_usan_append_flow`: iterar solo sobre `["HubTransaccion"]` (Hub_Cliente y Hub_Operacion ya no tienen `@dp.append_flow`)
+  - Renombrar `test_hubs_usan_procesar_hub` → `test_hubs_cliente_operacion_usan_auto_cdc_flow`: verificar `dp.create_auto_cdc_flow(`, `stored_as_scd_type=1` y `@dp.view` en Hub_Cliente y Hub_Operacion; verificar ausencia de `procesar_hub(` y de `except_column_list`
+  - `test_links_usan_append_flow`: iterar solo sobre `["LinkClienteTransaccion"]`
+  - Renombrar `test_links_usan_procesar_link` → `test_link_cliente_operacion_usa_auto_cdc_flow`: verificar el mismo patrón en Link_Cliente_Operacion
+
+- [x] OPT-001.5 Actualizar documentación (Steering y SYSTEM.md)
+  - Actualizar `tech.md`: tabla de API (agregar `@dp.view` y `dp.create_auto_cdc_flow()`), Decisión 5 (nueva decisión de estrategia mixta), tabla de Trazabilidad de Lecturas
+  - Actualizar `structure.md`: tabla de Objetos de Base de Datos (diferenciar Hub/Link OPT-001 vs. AppendFlow)
+  - Actualizar `product.md`: Capacidad 2 (reflejar estrategia mixta)
+  - Actualizar `SYSTEM.md`: tabla de estrategia de tipos de tabla, bloque "Herramientas de deduplicación", secciones "Procesamiento" de Hubs y Links
