@@ -35,6 +35,8 @@ from pyspark.sql.window import Window
 | `@dp.temporary_view()` | Vista temporal solo durante ejecución | No persiste en UC |
 | `dp.create_streaming_table()` | Crear ST programáticamente | Expectations se definen aquí, no en `@dp.append_flow` |
 | `@dp.append_flow()` | Flujo Append hacia ST existente | Para inserción incremental acumulativa |
+| `@dp.view` | Vista nombrada sin estado dentro del pipeline | Fuente de datos para `dp.create_auto_cdc_flow()` |
+| `dp.create_auto_cdc_flow()` | Flujo CDC (MERGE) hacia ST existente | Deduplicación cross-batch gestionada por el motor; usar con `stored_as_scd_type=1`. **`except_column_list` excluye columnas del esquema target** (no las protege de updates) — no usar para preservar `FechaRegistro` |
 
 ## Restricciones Serverless (CRÍTICO)
 
@@ -86,20 +88,22 @@ ruta_base_autoloader = spark.conf.get("pipeline.ruta_base_autoloader")
 2. **SHA2 sobre F.hash()** — Para llaves de negocio se usa SHA2-256/512 (determinístico, sin colisiones prácticas). `F.hash()` solo donde se necesite hash simple con protección ANSI.
 3. **Liquid Clustering sobre Z-Order** — Optimización nativa de Delta Lake; `FechaRegistro` siempre primera columna del cluster.
 4. **Append Only en Data Vault** — Hubs, Links y Satellites nunca actualizan ni eliminan; solo insertan nuevos registros.
-5. **ST única en Bronce** — Cada fuente de datos tiene una única Streaming Table persistente (AutoLoader directo). Se eliminó la arquitectura de 2 capas (ST temporal + MV snapshot). Las entidades de Plata leen Bronce con `dp.read_stream()` dentro de `@dp.append_flow()`.
-6. **Todas las entidades de Plata como ST+AppendFlow** — Hubs, Links y Satellites usan `dp.create_streaming_table()` + `@dp.append_flow()`. No se usan Materialized Views en Plata. Deduplicación via:
-   - **Hubs**: `procesar_hub()` — LEFT ANTI JOIN por columnas de llave de negocio.
-   - **Links**: `procesar_link()` — LEFT ANTI JOIN por columnas de hash.
-   - **Satellites de estado**: `procesar_satellite()` — LEFT JOIN+WHERE via `Hash_Diferenciador` con ROW_NUMBER.
-   - **Satellites transaccionales**: `procesar_satellite_transaccional()` — LEFT ANTI JOIN por `[hash_col, fecha_col]`.
+5. **ST única en Bronce** — Cada fuente de datos tiene una única Streaming Table persistente (AutoLoader directo). Se eliminó la arquitectura de 2 capas (ST temporal + MV snapshot). Las entidades de Plata leen Bronce con `dp.read_stream()` dentro de `@dp.append_flow()` o dentro de una función `@dp.view` (según la entidad).
+6. **Estrategia de deduplicación mixta en Plata** — Las entidades Data Vault de Plata usan el patrón más eficiente según su naturaleza. No se usan Materialized Views en Plata. Deduplicación via:
+   - **Hub_Cliente, Hub_Operacion, Link_Cliente_Operacion (OPT-001)**: `dp.create_streaming_table()` + `@dp.view` + `dp.create_auto_cdc_flow(stored_as_scd_type=1)` — MERGE gestionado por el motor, O(delta), sin full scan histórico. `FechaRegistro` se genera con `F.current_timestamp()` en el `@dp.view` y se actualiza en cada MERGE (semántica "última vez vista"). **`except_column_list` NO se usa**: en `dp.create_auto_cdc_flow` excluye la columna del esquema del target —no la protege de updates— causando `DELTA_COLUMN_NOT_FOUND_IN_SCHEMA`.
+   - **Hub_Transaccion, Link_Cliente_Transaccion**: `dp.create_streaming_table()` + `@dp.append_flow()` con `procesar_hub()` / `procesar_link()` — LEFT ANTI JOIN por llave de negocio / combinación de hashes.
+   - **Satellites de estado** (Cliente, Operación): `dp.create_streaming_table()` + `@dp.append_flow()` con `procesar_satellite()` — LEFT JOIN+WHERE via `Hash_Diferenciador` con ROW_NUMBER.
+   - **Satellites transaccionales** (Transacción): `dp.create_streaming_table()` + `@dp.append_flow()` con `procesar_satellite_transaccional()` — LEFT ANTI JOIN por `[hash_col]` solo (primera-escritura-gana). Una transacción ATM es un hecho inmutable; la llave `hash_col` es suficiente para deduplicar. `fecha_col` se mantiene en la firma por compatibilidad pero no participa en la deduplicación (corrección B.1 — resolvió duplicados Q=11 en `Hec_Transacciones_ATM`). Las fuentes estáticas de `Trx_ATM_Stream` aplican adicionalmente `dropDuplicates(["Hash_Transaccion"])` antes del stream-static join como defensa en profundidad (corrección B.2).
 7. **Constantes centralizadas** — Todos los umbrales de negocio se definen en el notebook de configuración, nunca hard-coded en transformaciones.
 
 ## Trazabilidad de Lecturas en Plata
 
-| Función en append_flow | Lee Bronce con | Lee tabla existente con |
-|------------------------|-----------------|-------------------------|
-| Hub / Link flow | `dp.read_stream(f"{cat}.{esq}.{Origen}")` | `spark.read.table()` dentro de `procesar_hub/link()` |
-| Satellite flow | `dp.read_stream(f"{cat}.{esq}.{Origen}")` | `spark.read.table()` dentro de `procesar_satellite*()` |
+| Entidad | Lee Bronce con | Lee tabla existente con |
+|---------|-----------------|-------------------------|
+| Hub_Cliente, Hub_Operacion (OPT-001) | `dp.read_stream(...)` dentro de `@dp.view` | Motor LSDP (MERGE interno — no hay `spark.read.table()` explícito) |
+| Link_Cliente_Operacion (OPT-001) | `dp.read_stream(...)` dentro de `@dp.view` | Motor LSDP (MERGE interno — no hay `spark.read.table()` explícito) |
+| Hub_Transaccion / Link_Cliente_Transaccion | `dp.read_stream(...)` dentro de `@dp.append_flow()` | `spark.read.table()` dentro de `procesar_hub/link()` |
+| Satellites (todos) | `dp.read_stream(...)` dentro de `@dp.append_flow()` | `spark.read.table()` dentro de `procesar_satellite*()` |
 
 ## Expectations (Calidad de Datos)
 

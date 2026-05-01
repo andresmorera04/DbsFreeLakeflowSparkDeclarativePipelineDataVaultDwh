@@ -486,21 +486,25 @@ def procesar_satellite(
 - **Postcondiciones**: Resultado contiene solo registros a insertar.
 - **Invariantes**: match por `hash_col` en el JOIN y coincidencia de `Hash_Diferenciador` en el filtro WHERE = registro excluido.
 
-#### procesar_satellite_transaccional() (Nueva)
+#### procesar_satellite_transaccional() (Primera-escritura-gana — actualizada B.1)
 
 | Campo | Detalle |
 |-------|---------||
-| Intención | Deduplicación histórica con LEFT ANTI JOIN por `Hash_Transaccion` + `fecha_transaccion` — aplica únicamente a Satellites transaccionales (Hub_Transaccion) |
+| Intención | Deduplicación primera-escritura-gana con LEFT ANTI JOIN por `hash_col` solo — aplica únicamente a Satellites transaccionales (Hub_Transaccion). Una transacción ATM es un hecho inmutable: su estado queda fijado en el momento en que se confirma, por lo que `hash_col` es suficiente para garantizar unicidad sin importar si `fecha_transaccion` llega con valores distintos (re-generaciones de laboratorio, re-ingestas del mismo parquet con fechas diferentes). |
 | Requisitos | 11.1, 11.2, 11.3, 11.5, 11.6, 11.7, 11.8, 11.9 |
 
 **Responsabilidades y Restricciones**
 - Recibe: `spark`, `catalogo_plata`, `esquema_plata`, `nombre_sat`, `hash_col: str`, `fecha_col: str`, `datos_nuevos: DataFrame`.
+- Aplica `dropDuplicates([hash_col])` **antes** del bloque try/join para deduplicación intra-batch.
 - Lee la Streaming Table existente del Satellite vía `spark.read.table()`.
-- Ejecuta LEFT ANTI JOIN por `hash_col` + `fecha_col`.
+- Ejecuta LEFT ANTI JOIN **exclusivamente** por `[hash_col]` (no por `[hash_col, fecha_col]`).
 - **No aplica** ROW_NUMBER ni ninguna reducción al último registro.
-- Retorna todos los registros cuya combinación `hash_col` + `fecha_col` no exista en la tabla.
+- Retorna todos los registros cuyo `hash_col` no exista en la tabla, independientemente del valor de `fecha_transaccion`.
 - La columna `Hash_Diferenciador` no participa en la deduplicación pero se mantiene en el DataFrame de salida.
-- Primera ejecución (tabla no existe): retorna todos los registros — fallback por `AnalysisException`.
+- `fecha_col` se mantiene en la firma por compatibilidad con los sitios de llamada existentes pero **no participa** en la lógica de deduplicación.
+- Primera ejecución (tabla no existe): retorna todos los registros deduplicados intra-batch — fallback por `AnalysisException`.
+
+> **Corrección B.1**: La versión anterior deduplicaba por `[hash_col, fecha_col]`. Como el generador de lab asigna un `TRXDT` diferente por cada ejecución, el mismo `TRXID` con fecha nueva pasaba el ANTI JOIN como "registro nuevo", acumulando N versiones en el satélite y propagando `Q = N` en `Hec_Transacciones_ATM` (Q = 11 observado en producción de lab).
 
 ##### Interfaz de Servicio
 ```python
@@ -510,13 +514,13 @@ def procesar_satellite_transaccional(
     esquema_plata: str,
     nombre_sat: str,
     hash_col: str,
-    fecha_col: str,
+    fecha_col: str,      # firma preservada por compatibilidad; no participa en dedup
     datos_nuevos: DataFrame,
 ) -> DataFrame:
-    """Retorna registros no duplicados vía LEFT ANTI JOIN por hash + fecha."""
+    """Primera-escritura-gana: retorna solo registros cuyo hash_col no existe ya en la tabla."""
 ```
-- **Precondiciones**: `datos_nuevos` contiene `hash_col` y `fecha_col`. Satellite registrado en UC o primera ejecución.
-- **Postcondiciones**: DataFrame resultado contiene solo registros cuya combinación no existe en la tabla.
+- **Precondiciones**: `datos_nuevos` contiene `hash_col`. Satellite registrado en UC o primera ejecución.
+- **Postcondiciones**: DataFrame resultado tiene como máximo una fila por valor de `hash_col`.
 - **Invariantes**: Nunca modifica la tabla existente. No aplica ROW_NUMBER. `Hash_Diferenciador` se preserva pero no se usa para deduplicación.
 
 ---
@@ -559,7 +563,7 @@ Las entidades de datos no cambian de esquema. Lo que cambia es el **tipo de tabl
 | Bronce (CMSTFL, TRXPFL, BLNCFL) | ST temporal + MV snapshot | ST persistente en UC | AutoLoader (sin cambio) |
 | Hub (Cliente, Operacion, Transaccion) | Materialized View | Streaming Table | `procesar_hub()` → LEFT ANTI JOIN |
 | Link (ClienteOperacion, ClienteTransaccion) | Materialized View | Streaming Table | `procesar_link()` → LEFT ANTI JOIN |
-| Satellite (9 tablas) | Streaming Table | Streaming Table (sin cambio) | Estándar: `procesar_satellite()` → LEFT JOIN por Hash_Hub + WHERE Hash_Diferenciador; Transaccional: `procesar_satellite_transaccional()` → LEFT ANTI JOIN |
+| Satellite (9 tablas) | Streaming Table | Streaming Table (sin cambio) | Estándar: `procesar_satellite()` → LEFT JOIN por Hash_Hub + WHERE Hash_Diferenciador; Transaccional: `procesar_satellite_transaccional()` → LEFT ANTI JOIN por `[hash_col]` solo (primera-escritura-gana, B.1) |
 
 ### Modelo Lógico — Sin Cambios en Esquemas
 

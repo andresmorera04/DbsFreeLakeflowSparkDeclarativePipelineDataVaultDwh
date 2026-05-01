@@ -97,18 +97,25 @@ La medalla de Plata implementa el **Raw Vault del modelado Data Vault 2.0**, com
 
 | Entidad DV2.0 | Tipo de tabla LSDP | Decorador/API | Justificación |
 |---------------|-------------------|---------------|----------------|
-| **Hubs** (3) | Streaming Table Acumulativa | `dp.create_streaming_table()` + `@dp.append_flow()` | Las tablas Hub son **Append-Only**: solo se insertan llaves de negocio nuevas mediante LEFT ANTI JOIN. El patrón ST+AppendFlow garantiza idempotencia sin reprocesar toda la tabla. La función `procesar_hub()` consulta la tabla existente vía `spark.read.table()` y hace LEFT ANTI JOIN por columnas de llave de negocio. |
-| **Links** (2) | Streaming Table Acumulativa | `dp.create_streaming_table()` + `@dp.append_flow()` | Las tablas Link son **Append-Only**: solo se insertan nuevas relaciones de pares de hashes. La función `procesar_link()` hace LEFT ANTI JOIN por columnas de hash. |
-| **Satellites** (9) | Streaming Table Acumulativa | `dp.create_streaming_table()` + `@dp.append_flow()` | Los Satellites son estrictamente **Append-Only** y acumulan historial indefinidamente. La función `procesar_satellite()` detecta cambios vía `Hash_Diferenciador` con LEFT JOIN+WHERE. La variante `procesar_satellite_transaccional()` usa LEFT ANTI JOIN por `Hash_{entity}` + `fecha_transaccion` para Satellites transaccionales. |
+| **Hub_Cliente**, **Hub_Operacion** | Streaming Table Acumulativa | `dp.create_streaming_table()` + `@dp.view` + `dp.create_auto_cdc_flow()` | Deduplicación cross-batch gestionada por el motor LSDP vía MERGE (SCD Type 1). Elimina el full scan O(histórico) que `procesar_hub()` requería en cada microbatch. `FechaRegistro` se incluye en el esquema (generada en el `@dp.view` con `F.current_timestamp()`) y se actualiza en cada MERGE (semántica "última vez vista"). **Nota**: `except_column_list` NO preserva columnas de updates — las excluye del esquema target; no se usa. |
+| **Hub_Transaccion** | Streaming Table Acumulativa | `dp.create_streaming_table()` + `@dp.append_flow()` | TRXID es globalmente único entre ejecuciones; `procesar_hub()` con LEFT ANTI JOIN es suficiente y su coste es amortizado por el volumen bajo de re-apariciones. |
+| **Link_Cliente_Operacion** | Streaming Table Acumulativa | `dp.create_streaming_table()` + `@dp.view` + `dp.create_auto_cdc_flow()` | Misma optimización que Hub_Cliente/Hub_Operacion: el par (Hash_Cliente, Hash_Operacion) se garantiza único mediante MERGE gestionado por el motor sin full scan. |
+| **Link_Cliente_Transaccion** | Streaming Table Acumulativa | `dp.create_streaming_table()` + `@dp.append_flow()` | La relación Cliente↔Transacción es 1:1 con TRXID único; `procesar_link()` con LEFT ANTI JOIN es suficiente. |
+| **Satellites** (9) | Streaming Table Acumulativa | `dp.create_streaming_table()` + `@dp.append_flow()` | Los Satellites son estrictamente **Append-Only** y acumulan historial indefinidamente. La función `procesar_satellite()` detecta cambios vía `Hash_Diferenciador` con LEFT JOIN+WHERE. La variante `procesar_satellite_transaccional()` usa LEFT ANTI JOIN por `Hash_{entity}` solo (primera-escritura-gana) para Satellites transaccionales — una transacción ATM es inmutable. |
 
-> **Decisión de diseño crítica**: Todos los elementos de Plata (Hubs, Links y Satellites) usan el patrón `dp.create_streaming_table()` + `@dp.append_flow()`. Esto garantiza que **ningún registro existente sea eliminado o reprocesado**, preservando la inmutabilidad histórica inherente al modelo Data Vault 2.0.
+> **Decisión de diseño crítica**: Todos los elementos de Plata (Hubs, Links y Satellites) usan el patrón `dp.create_streaming_table()` como base. Esto garantiza que **ningún registro existente sea eliminado o reprocesado**, preservando la inmutabilidad histórica inherente al modelo Data Vault 2.0. La estrategia de escritura varía por entidad:
 >
 > **Herramientas de deduplicación**:
-> - **Hubs**: función `procesar_hub(spark, catalogo_plata, esquema_plata, nombre_hub, columnas_llave, datos_nuevos)` — LEFT ANTI JOIN por columnas de llave de negocio contra la tabla existente. `AnalysisException` para primera ejecución.
-> - **Links**: función `procesar_link(spark, catalogo_plata, esquema_plata, nombre_link, columnas_hash, datos_nuevos)` — LEFT ANTI JOIN por columnas de hash. `AnalysisException` para primera ejecución.
-> - **Satellites**: función `procesar_satellite(spark, catalogo_plata, esquema_plata, nombre_sat, hash_col, datos_nuevos)` — LEFT JOIN+WHERE sobre `Hash_Diferenciador` con ROW_NUMBER para Satellites de estado (Cliente, Operación). Función `procesar_satellite_transaccional(spark, catalogo_plata, esquema_plata, nombre_sat, hash_col, fecha_col, datos_nuevos)` — LEFT ANTI JOIN por `[hash_col, fecha_col]` para Satellites transaccionales (Transacción).
+> - **Hub_Cliente, Hub_Operacion** (OPT-001): `dp.create_auto_cdc_flow(stored_as_scd_type=1)` con `@dp.view` como fuente — MERGE gestionado por el motor (O(delta), sin full scan). `FechaRegistro` se genera con `F.current_timestamp()` en el `@dp.view` y se actualiza en cada MERGE (semántica "última vez vista"). **`except_column_list` NO se usa**: excluye la columna del esquema target causando `DELTA_COLUMN_NOT_FOUND_IN_SCHEMA`.
+> - **Hub_Transaccion**: `@dp.append_flow()` + función `procesar_hub(spark, catalogo_plata, esquema_plata, nombre_hub, columnas_llave, datos_nuevos)` — LEFT ANTI JOIN por `IdentificadorTransaccion` contra la tabla existente. `AnalysisException` para primera ejecución.
+> - **Link_Cliente_Operacion** (OPT-001): `dp.create_auto_cdc_flow(stored_as_scd_type=1)` con `@dp.view` como fuente — MERGE gestionado por el motor (O(delta), sin full scan). Garantiza unicidad del par `(Hash_Cliente, Hash_Operacion)`. `FechaRegistro` se actualiza en cada MERGE.
+> - **Link_Cliente_Transaccion**: `@dp.append_flow()` + función `procesar_link(spark, catalogo_plata, esquema_plata, nombre_link, columnas_hash, datos_nuevos)` — LEFT ANTI JOIN por columnas de hash. `AnalysisException` para primera ejecución.
+> - **Satellites**: función `procesar_satellite(spark, catalogo_plata, esquema_plata, nombre_sat, hash_col, datos_nuevos)` — LEFT JOIN+WHERE sobre `Hash_Diferenciador` con ROW_NUMBER para Satellites de estado (Cliente, Operación). Función `procesar_satellite_transaccional(spark, catalogo_plata, esquema_plata, nombre_sat, hash_col, fecha_col, datos_nuevos)` — LEFT ANTI JOIN por `[hash_col]` solo para Satellites transaccionales (Transacción). Una transacción ATM es un hecho inmutable: la llave `hash_col` es suficiente para garantizar unicidad (corrección B.1). `fecha_col` se preserva en la firma por compatibilidad pero no participa en la deduplicación.
 >
-> **Lectura de Bronce**: Todas las entidades de Plata leen Bronce con `dp.read_stream(f"{catalogo}.{esquema}.{Nombre}")` dentro del `@dp.append_flow()`. **No** se usa `spark.read.table()` para leer Bronce.
+> **Lectura de Bronce**:
+> - Entidades con `@dp.append_flow()`: leen Bronce con `dp.read_stream(f"{catalogo}.{esquema}.{Nombre}")` dentro del flujo.
+> - Entidades con `dp.create_auto_cdc_flow()`: leen Bronce con `dp.read_stream(f"{catalogo}.{esquema}.{Nombre}")` dentro de la función decorada con `@dp.view`.
+> - En ningún caso se usa `spark.read.table()` para leer Bronce.
 
 > **Referencia bibliográfica**: El diseño del Data Vault 2.0 sigue los principios descritos en el libro *"Building a Scalable Data Warehouse with Data Vault 2.0"* (disponible en `Temporal/Building-a-Scalable-Data-Warehouse-with-Data-Vault-2.0.pdf`) y la guía oficial de Databricks: https://www.databricks.com/blog/what-is-data-vault
 
@@ -125,8 +132,11 @@ Las tablas Hub almacenan las **llaves de negocio** de cada entidad. Representan 
 | `FechaRegistro` | TIMESTAMP | Momento exacto de inserción de la tupla (`Load_Date` en Data Vault 2.0). |
 | `FuenteDatos` | STRING | Nombre de tres partes (`catalogo.esquema.tabla`) de la tabla de Bronce origen. |
 
-**Procesamiento — Append Only con LEFT ANTI JOIN**:  
-Only se insertan llaves de negocio que **no existen** en la tabla Hub. La función `procesar_hub()` hace LEFT ANTI JOIN entre los datos nuevos y la tabla Hub existente (leída con `spark.read.table()`). Si la tabla no existe (primera ejecución), se captura `AnalysisException` y se retornan todos los datos como nuevos. Los registros ya almacenados son **inmutables y persistentes**.
+**Procesamiento — Append Only**:
+
+> **Hub_Cliente y Hub_Operacion (OPT-001)**: Usan `dp.create_auto_cdc_flow(stored_as_scd_type=1)`. El motor gestiona un MERGE cross-batch: si la llave de negocio no existe, inserta; si ya existe, actualiza todos los campos incluyendo `FechaRegistro` (semántica "última vez vista"). Coste O(delta del microbatch), sin full scan del Hub histórico. **`except_column_list` no se usa** — en `dp.create_auto_cdc_flow` este parámetro excluye la columna del esquema del target (no la protege de updates), lo que causa `DELTA_COLUMN_NOT_FOUND_IN_SCHEMA` al referenciarla en `cluster_by`.
+
+Para **Hub_Transaccion**: `procesar_hub()` hace LEFT ANTI JOIN entre los datos nuevos y la tabla Hub existente (leída con `spark.read.table()`). Si la tabla no existe (primera ejecución), se captura `AnalysisException` y se retornan todos los datos como nuevos. Los registros ya almacenados son **inmutables y persistentes**.
 
 **Criterio de creación**: Se crea un Hub por cada entidad de negocio que disponga de una llave de negocio identificable. Ejemplos: Clientes (CUSTID), Operaciones/Saldos (CUSTID + BLSQ), Transacciones (TRXID, o llave compuesta CUSTID + TRXID + TRXSQ).
 
@@ -146,8 +156,11 @@ Las tablas Link materializan las **relaciones entre dos tablas Hub**, creando un
 | `FechaRegistro` | TIMESTAMP | Momento exacto de inserción (Load_Date en Data Vault 2.0). |
 | `FuenteDatos` | STRING | Nombre completo de tres partes de la tabla de Bronce origen. |
 
-**Procesamiento — Append Only con LEFT ANTI JOIN**:  
-Solo se inserta una nueva tupla cuando la combinación de los dos hashes **no existe** en la tabla Link. La función `procesar_link()` hace LEFT ANTI JOIN entre los datos nuevos y la tabla Link existente (leída con `spark.read.table()`). Si la tabla no existe (primera ejecución), se captura `AnalysisException` y se retornan todos los datos como nuevos. Los datos ya almacenados son persistentes e inmutables.
+**Procesamiento — Append Only**:
+
+> **Link_Cliente_Operacion (OPT-001)**: Usa `dp.create_auto_cdc_flow(stored_as_scd_type=1)`. El motor garantiza unicidad de la combinación `(Hash_Cliente, Hash_Operacion)` mediante MERGE cross-batch. `FechaRegistro` se actualiza en cada MERGE (semántica "última vez vista"). **`except_column_list` no se usa** — excluiría la columna del esquema target.
+
+Para **Link_Cliente_Transaccion**: `procesar_link()` hace LEFT ANTI JOIN entre los datos nuevos y la tabla Link existente (leída con `spark.read.table()`). Si la tabla no existe (primera ejecución), se captura `AnalysisException` y se retornan todos los datos como nuevos. Los datos ya almacenados son persistentes e inmutables.
 
 **Criterio de creación**: Se crea un Link cuando en el origen de datos existe una relación (por ejemplo, vía Foreign Key) entre dos entidades. **Alcance del laboratorio**: Cada Link relaciona exactamente **dos Hubs** (no se modelan Links de tres o más Hubs).
 
@@ -205,9 +218,9 @@ La medalla de Oro implementa un **Modelo Estrella** (Star Schema) orientado al a
 |-----------|------|-----------------|-------------|
 | **Dim_Cliente** | Tipo 1 (sobrescritura) | Hub_Cliente + Satellites de Cliente | Contiene los atributos actuales de cada cliente: datos demográficos, segmentación, contacto, clasificación. |
 | **Dim_Operacion** | Tipo 1 (sobrescritura) | Hub_Operacion + Satellites de Operación | Contiene los atributos actuales de cada operación/cuenta: tipo de cuenta, moneda, estado, producto bancario, saldos. |
-| **Dim_Tiempo** | Generada/Calculada | N/A (auto-generada) | Dimensión de fecha con granularidad diaria. Contiene atributos como año, mes, día, trimestre, semestre, nombre del día, indicador de fin de semana, etc. |
+| **Dim_Tiempo** | Tipo 1 — Vista Materializada incremental | `Sat_Transaccion_Montos.fecha_transaccion` (valores distintos) | Dimensión de fecha con granularidad diaria. Se construye exclusivamente a partir de las fechas de transacción presentes en el Satellite de montos, sin lógica de fechas explícita. Contiene atributos como año, mes, día, trimestre, semestre, nombre del día, indicador de fin de semana, etc. |
 
-**Regla especial para Dim_Tiempo**: Cada vez que se ejecuta el pipeline, la dimensión debe validar si tanto el **día actual** como el **día de ayer** existen registrados. Si falta alguno de los dos (o ambos), debe proceder a insertar los datos correspondientes antes de continuar con el procesamiento de la tabla de hechos.
+**Comportamiento incremental de Dim_Tiempo**: La dimensión se implementa como **Vista Materializada** con refresh incremental nativo de LSDP. Cada vez que aparecen nuevas fechas de transacción en `Sat_Transaccion_Montos`, el motor las incorpora automáticamente en el siguiente refresh del pipeline. No requiere lógica imperativa de fechas ni validaciones manuales de "ayer/hoy".
 
 #### Tabla de Hechos
 
@@ -416,28 +429,34 @@ def filtro_atm():
 Crea una Streaming Table sin decorador, útil cuando se necesita separar la definición de la tabla del flujo de datos.
 
 ```python
-dp.create_streaming_table(
+# Ejemplo: Dim_Tiempo como Vista Materializada incremental
+# (patrón aprobado para la Medalla de Oro)
+@dp.materialized_view(
     name=f"{catalogo_oro}.{esquema_oro}.Dim_Tiempo",
     cluster_by=["FechaClave"]
 )
+def dim_tiempo():
+    return (
+        spark.read.table(f"{catalogo_plata}.{esquema_plata}.Sat_Transaccion_Montos")
+        .select(F.col("fecha_transaccion").alias("FechaClave"))
+        .distinct()
+        .withColumn("Anio", F.year("FechaClave"))
+        .withColumn("Mes", F.month("FechaClave"))
+        # ... demás atributos calendario con funciones determinísticas ...
+    )
 ```
+
+**Nota**: Las expectations de las Materialized Views se declaran como decoradores sobre la función, igual que en Hubs y Links de Plata.
 
 #### `@dp.append_flow()` — Flujo de Append
 
 Define un flujo de datos que inserta registros en una Streaming Table existente. Se usa para cargar datos de múltiples fuentes en una misma tabla o para lógica de inserción incremental (acumulativa).
 
 ```python
-@dp.append_flow(target=f"{catalogo_oro}.{esquema_oro}.Dim_Tiempo")
-def cargar_dim_tiempo():
-    return (
-        spark.range(0, 2)
-        .withColumn("FechaClave",
-            F.when(F.col("id") == 0, F.current_date())
-             .otherwise(F.date_sub(F.current_date(), 1)))
-        .drop("id")
-        .withColumn("Anio", F.year("FechaClave"))
-        # ... demás atributos temporales ...
-    )
+# Ejemplo genérico de append_flow (NO aplica a Dim_Tiempo en Oro)
+@dp.append_flow(target=f"{catalogo}.{esquema}.MiStreamingTable")
+def cargar_datos():
+    return spark.read.table(f"{catalogo_plata}.{esquema_plata}.FuentePlata")
 ```
 
 **Nota**: Las expectations se definen en `dp.create_streaming_table()`, no en `@dp.append_flow`.
@@ -644,7 +663,7 @@ El nombre de tres partes (`catalogo.esquema.tabla`) debe pasarse completo en el 
 | Unity Catalog | ✅ Sí | Gestión de catálogos/esquemas |
 | Volumes | ✅ Sí | Landing Zone para parquets |
 | Materialized Views | ⚠️ Solo Oro | En Plata y Bronce se usa ST+AppendFlow. Las MVs de Bronce fueron eliminadas. |
-| Streaming Tables | ✅ Sí | Para Bronce (AutoLoader directo), todas las entidades de Plata (ST Acumulativas con AppendFlow) y Dim_Tiempo en Oro |
+| Streaming Tables | ✅ Sí | Para Bronce (AutoLoader directo) y todas las entidades de Plata (ST Acumulativas con AppendFlow). **Dim_Tiempo en Oro NO usa Streaming Table** — se implementa como Vista Materializada incremental. |
 | Lakeflow Jobs | ✅ Sí | Orquestación del pipeline |
 | Delta Lake | ✅ Sí | Formato de almacenamiento |
 | `F.sha2()` | ✅ Sí | Para hashes SHA2-256/512 |
@@ -2390,9 +2409,9 @@ Se construye a partir de Hub_Operacion + Satellites de Operación (registros má
 
 **Patrón de DimId**: Mismo patrón que Dim_Cliente. Llave de negocio compuesta: `(IdentificadorCliente, SecuenciaSaldo)`. DimId persistente asignado por orden de primera aparición. Dado que la relación BLNCFL:CMSTFL es 1:1, `IdentificadorCliente` solo podría usarse como llave simple, pero se mantiene la compuesta con `SecuenciaSaldo` por fidelidad al modelo de Plata.
 
-### Dim_Tiempo (Acumulativa — Streaming Table con Append Flow)
+### Dim_Tiempo (Vista Materializada Incremental)
 
-Dimensión **acumulativa**: las fechas ya almacenadas **persisten y son inmutables**. Solo se agregan fechas nuevas, validando siempre la fecha de ayer y la de hoy (según el día actual de ejecución).
+Dimensión de tiempo implementada como **Vista Materializada con refresh incremental** nativo de LSDP. Se alimenta exclusivamente de los valores distintos de `Sat_Transaccion_Montos.fecha_transaccion`. Cada vez que el pipeline detecta nuevas fechas de transacción en Plata, el motor las incorpora automáticamente sin lógica imperativa de fechas.
 
 | Columna | Tipo de Dato | Descripción |
 |---------|-------------|-------------|
@@ -2405,45 +2424,40 @@ Dimensión **acumulativa**: las fechas ya almacenadas **persisten y son inmutabl
 | `DiaSemana` | IntegerType | Día de la semana (1=Domingo, 7=Sábado, por Spark) |
 | `NombreDia` | StringType | Nombre del día (Lunes, Martes, ...) |
 | `NombreMes` | StringType | Nombre del mes (Enero, Febrero, ...) |
-| `EsFinSemana` | BooleanType | True si es sábado o domingo |
+| `EsFinSemana` | BooleanType | True si es sábado o domingo (calculado en Oro) |
 | `DiaDelAnio` | IntegerType | Día del año (1-366) |
 | `SemanaDelAnio` | IntegerType | Semana del año (1-53) |
 
 **Liquid Clustering**: `FechaClave`
 
-**Ejemplo de código LSDP (Patrón acumulativo con Streaming Table)**:
+**Restricciones de implementación**: solo operadores compatibles con incremental refresh (`select`, `distinct`, `withColumn` con funciones determinísticas, `when/otherwise`). Prohibido: `F.current_date()`, `F.current_timestamp()`, `F.now()`, `F.rand()`, UDFs, joins, Window functions.
+
+**Ejemplo de código LSDP (Patrón MV incremental — patrón aprobado)**:
 
 ```python
-# Paso 1: Crear Streaming Table acumulativa
-dp.create_streaming_table(
+validaciones_dim_tiempo = {
+    "fecha_clave_no_nula": "FechaClave IS NOT NULL",
+    "mes_valido": "Mes BETWEEN 1 AND 12",
+}
+
+@dp.materialized_view(
     name=f"{catalogo_oro}.{esquema_oro}.Dim_Tiempo",
-    cluster_by=["FechaClave"]
+    cluster_by=["FechaClave"],
+    table_properties={
+        "delta.autoOptimize.autoCompact": "true",
+        "delta.autoOptimize.optimizeWrite": "true",
+        "delta.enableChangeDataFeed": "true",
+        "delta.deletedFileRetentionDuration": "interval 30 days",
+        "delta.logRetentionDuration": "interval 60 days",
+    }
 )
-
-# Paso 2: Append Flow que agrega solo fechas nuevas
-@dp.append_flow(target=f"{catalogo_oro}.{esquema_oro}.Dim_Tiempo")
-def cargar_dim_tiempo():
-    hoy = F.current_date()
-    ayer = F.date_sub(hoy, 1)
-
-    # Generar las 2 fechas requeridas (hoy y ayer)
-    fechas_requeridas = (
-        spark.range(0, 2)
-        .withColumn("FechaClave",
-            F.when(F.col("id") == 0, hoy).otherwise(ayer))
-        .drop("id")
-    )
-
-    # Leer existentes para evitar duplicados
-    try:
-        existente = spark.read.table(f"{catalogo_oro}.{esquema_oro}.Dim_Tiempo")
-        fechas_nuevas = fechas_requeridas.join(existente.select("FechaClave"),
-                                                "FechaClave", "left_anti")
-    except AnalysisException:
-        fechas_nuevas = fechas_requeridas  # Primera ejecución (tabla no existe)
-
+@dp.expect_all_or_fail(validaciones_dim_tiempo)
+@dp.expect("anio_valido", "Anio BETWEEN 1900 AND 2100")
+def dim_tiempo():
     return (
-        fechas_nuevas
+        spark.read.table(f"{catalogo_plata}.{esquema_plata}.Sat_Transaccion_Montos")
+        .select(F.col("fecha_transaccion").alias("FechaClave"))
+        .distinct()
         .withColumn("Anio", F.year("FechaClave"))
         .withColumn("Mes", F.month("FechaClave"))
         .withColumn("Dia", F.dayofmonth("FechaClave"))
@@ -2452,13 +2466,13 @@ def cargar_dim_tiempo():
             F.when(F.quarter("FechaClave") <= 2, 1).otherwise(2))
         .withColumn("DiaSemana", F.dayofweek("FechaClave"))
         .withColumn("NombreDia",
-            F.when(F.dayofweek("FechaClave") == 1, "Domingo")
-             .when(F.dayofweek("FechaClave") == 2, "Lunes")
+            F.when(F.dayofweek("FechaClave") == 2, "Lunes")
              .when(F.dayofweek("FechaClave") == 3, "Martes")
              .when(F.dayofweek("FechaClave") == 4, "Miércoles")
              .when(F.dayofweek("FechaClave") == 5, "Jueves")
              .when(F.dayofweek("FechaClave") == 6, "Viernes")
-             .otherwise("Sábado"))
+             .when(F.dayofweek("FechaClave") == 7, "Sábado")
+             .otherwise("Domingo"))
         .withColumn("NombreMes",
             F.when(F.month("FechaClave") == 1, "Enero")
              .when(F.month("FechaClave") == 2, "Febrero")
@@ -2473,7 +2487,8 @@ def cargar_dim_tiempo():
              .when(F.month("FechaClave") == 11, "Noviembre")
              .otherwise("Diciembre"))
         .withColumn("EsFinSemana",
-            F.dayofweek("FechaClave").isin(1, 7))
+            F.when(F.dayofweek("FechaClave").isin(1, 7), F.lit(True))
+             .otherwise(F.lit(False)))
         .withColumn("DiaDelAnio", F.dayofyear("FechaClave"))
         .withColumn("SemanaDelAnio", F.weekofyear("FechaClave"))
     )
@@ -2485,7 +2500,7 @@ Se construye a partir del filtrado de transacciones ATM (DATM, CATM) del Data Va
 
 | Columna | Tipo de Dato | Fuente | Descripción |
 |---------|-------------|--------|-------------|
-| `FechaTransaccion` | DateType | Sat_Transaccion_Montos | FK dimensión tiempo |
+| `FechaClave` | DateType | Sat_Transaccion_Montos | FK dimensión tiempo — nombre alineado con `Dim_Tiempo.FechaClave` |
 | `DimIdCliente` | LongType | Dim_Cliente | FK dimensión cliente |
 | `IdentificadorTransaccion` | StringType | Hub_Transaccion | PK natural de la transacción |
 | `DimIdOperacion` | LongType | Dim_Operacion | FK dimensión operación (vía cliente) |
@@ -2499,7 +2514,7 @@ Se construye a partir del filtrado de transacciones ATM (DATM, CATM) del Data Va
 | `EstadoTransaccion` | StringType | Sat_Transaccion_DatosEstables | Estado |
 | `CanalTransaccion` | StringType | Sat_Transaccion_DatosEstables | Canal |
 
-**Liquid Clustering**: `FechaTransaccion`, `DimIdCliente`
+**Liquid Clustering**: `FechaClave`, `DimIdCliente`
 
 **Métricas derivables** (en capa de consumo/dashboards):
 - Cantidad de depósitos (créditos) por cliente: `COUNT(*) WHERE EsDeposito = true`
@@ -2514,11 +2529,11 @@ Se construye a partir del filtrado de transacciones ATM (DATM, CATM) del Data Va
 ```python
 @dp.materialized_view(
     name=f"{catalogo_oro}.{esquema_oro}.Fact_Transacciones_ATM",
-    cluster_by=["FechaTransaccion", "DimIdCliente"]
+    cluster_by=["FechaClave", "DimIdCliente"]
 )
 @dp.expect_all_or_fail({
     "dim_id_cliente_no_nulo": "DimIdCliente IS NOT NULL",
-    "fecha_transaccion_no_nula": "FechaTransaccion IS NOT NULL",
+    "fecha_clave_no_nula": "FechaClave IS NOT NULL",
     "tipo_transaccion_atm": "TipoTransaccion IN ('DATM', 'CATM')"
 })
 def fact_transacciones_atm():
@@ -2581,7 +2596,7 @@ def fact_transacciones_atm():
         .withColumn("EsDeposito", F.col("tipo_transaccion") == F.lit(TIPO_CATM))
         # Selección final — sin Hashes
         .select(
-            F.col("fecha_transaccion").alias("FechaTransaccion"),
+            F.col("fecha_transaccion").alias("FechaClave"),
             F.col("DimIdCliente"),
             F.col("IdentificadorTransaccion"),
             F.col("DimIdOperacion"),
@@ -2967,16 +2982,21 @@ Cada Link relaciona **exactamente dos Hubs** (alcance del laboratorio):
 | Dim_Cliente | `DimIdCliente` |
 | Dim_Operacion | `DimIdOperacion` |
 | Dim_Tiempo | `FechaClave` |
-| Fact_Transacciones_ATM | `FechaTransaccion`, `DimIdCliente` |
+| Fact_Transacciones_ATM | `FechaClave`, `DimIdCliente` |
 
 > **Regla de ordenamiento de columnas**: Las columnas de Liquid Clustering deben definirse en las **primeras posiciones** del esquema de cada tabla. Según la documentación oficial de Databricks (https://docs.databricks.com/aws/en/delta/clustering), las columnas de LC deben tener estadísticas recopiladas, y por defecto solo las primeras 32 columnas de una tabla Delta tienen estadísticas. Todos los esquemas de este documento ya reflejan este ordenamiento.
 
-## Regla Especial: Dimensión de Tiempo (Medalla de Oro)
+## Comportamiento Incremental: Dimensión de Tiempo (Medalla de Oro)
 
-Cada vez que se ejecuta el pipeline de la medalla de Oro, la Dimensión de Tiempo debe:
-1. Verificar si el **día actual** (`current_date()`) está registrado en la dimensión.
-2. Verificar si el **día de ayer** (`current_date() - 1 día`) está registrado en la dimensión.
-3. Si falta alguno de los dos días (o ambos), insertarlos con todos sus atributos temporales antes de continuar con el procesamiento de la tabla de hechos.
+`Dim_Tiempo` se implementa como **Vista Materializada con refresh incremental**. No requiere lógica imperativa de fechas. El motor LSDP:
+
+1. Lee los valores distintos de `Sat_Transaccion_Montos.fecha_transaccion` en cada refresh.
+2. Incorpora automáticamente las fechas nuevas que aún no existen en la dimensión.
+3. Garantiza la consistencia entre `Dim_Tiempo.FechaClave` y `Hec_Transacciones_ATM.FechaClave` por construcción (mismo origen).
+
+> **Nota sobre llaves subrogadas (mitigación R-03 aprobada)**: Los valores de `DimIdCliente` y `DimIdOperacion` son estables únicamente para el mismo conjunto de hashes de entrada (`dense_rank` sobre orden lexicográfico). Si cambia el conjunto de hashes (alta/baja de entidades), los IDs pueden reasignarse. Las herramientas de consumo BI **no deben referenciar valores literales de `DimId`** ni almacenarlos como constantes externas.
+>
+> **Nota sobre `DimIdOperacion` (mitigación R-02 aprobada)**: La llave `DimIdOperacion` en `Hec_Transacciones_ATM` se resuelve como la **operación dominante por cliente** (`SecuenciaSaldo desc, Hash_Operacion asc`). No representa la operación de la transacción individual (no existe esa relación en las fuentes actuales). Este supuesto está documentado y aceptado para el alcance del laboratorio.
 
 ## Propiedades Delta Obligatorias (Todas las Tablas)
 
@@ -3037,7 +3057,7 @@ table_properties={
 |---|--------|---------------|-----------|-----------|----------------------|---------------|
 | E7 | `dim_id_cliente_no_nulo` | `DimIdCliente IS NOT NULL` | `@dp.expect_or_fail` | **FAIL** | Dim_Cliente, Fact_Transacciones_ATM | La llave subrogada es esencial para la integridad referencial del modelo estrella. |
 | E8 | `dim_id_operacion_no_nulo` | `DimIdOperacion IS NOT NULL` | `@dp.expect_or_fail` | **FAIL** | Dim_Operacion | Llave subrogada de la dimensión de operaciones. |
-| E9 | `fecha_transaccion_no_nula` | `FechaTransaccion IS NOT NULL` | `@dp.expect_or_fail` | **FAIL** | Fact_Transacciones_ATM | FK obligatoria hacia Dim_Tiempo. |
+| E9 | `fecha_clave_no_nula` | `FechaClave IS NOT NULL` | `@dp.expect_or_fail` | **FAIL** | Fact_Transacciones_ATM | FK obligatoria hacia Dim_Tiempo. |
 | E10 | `tipo_transaccion_atm` | `TipoTransaccion IN ('DATM', 'CATM')` | `@dp.expect_or_fail` | **FAIL** | Fact_Transacciones_ATM | La tabla de hechos solo debe contener transacciones ATM. |
 | E11 | `monto_principal_positivo_oro` | `MontoPrincipal > 0` | `@dp.expect_or_drop` | **DROP** | Fact_Transacciones_ATM | Montos deben ser positivos en la tabla de hechos. |
 
@@ -3062,7 +3082,7 @@ validaciones_sat_trx_montos = {
 # Expectations para Fact_Transacciones_ATM (Oro)
 validaciones_fact_atm = {
     "dim_id_cliente_no_nulo": "DimIdCliente IS NOT NULL",
-    "fecha_transaccion_no_nula": "FechaTransaccion IS NOT NULL",
+    "fecha_clave_no_nula": "FechaClave IS NOT NULL",
     "tipo_transaccion_atm": "TipoTransaccion IN ('DATM', 'CATM')",
     "monto_principal_positivo": "MontoPrincipal > 0"
 }

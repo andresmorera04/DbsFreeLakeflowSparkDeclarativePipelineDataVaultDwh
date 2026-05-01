@@ -114,7 +114,7 @@ graph TB
 - **Patrón seleccionado**: Pipeline Declarativo por Capas (Medallón) — Plata lee de MV de Bronce y produce tablas registradas bajo `{catalogo_plata}.{esquema_plata}`.
 - **Patrón por tipo de entidad Data Vault**:
   - **Hubs / Links → `@dp.materialized_view()`**: Tablas de referencia idempotentes con `dropDuplicates`. Recalcular con MV es correcto porque siempre producen el mismo resultado.
-  - **Satellites → `dp.create_streaming_table()` + `@dp.append_flow()`**: Streaming Tables Acumulativas que preservan historial permanentemente. Solo se insertan registros nuevos/cambiados detectados por `procesar_satellite()`. Este es el mismo patrón aprobado en SYSTEM.md para `Dim_Tiempo` (R10).
+  - **Satellites → `dp.create_streaming_table()` + `@dp.append_flow()`**: Streaming Tables Acumulativas que preservan historial permanentemente. Solo se insertan registros nuevos/cambiados detectados por `procesar_satellite()`. Este patrón es el correcto por la semántica Append-Only de Data Vault 2.0: una Materialized View recalcularía la tabla completa en cada ejecución, destruyendo el historial acumulado.
 - **Fronteras de dominio**: Los 8 notebooks de Plata pertenecen al dominio `transformations/`; las 2 funciones nuevas extienden `utilities/` (Python puro, sin importar LSDP).
 - **Patrones existentes preservados**: Imports de `obtener_configuracion(spark)`, funciones helper sin LSDP, nombre de 3 partes en todos los decoradores, Liquid Clustering en primeras posiciones.
 - **Justificación de componentes nuevos**: Cada notebook materializa los requisitos de su entidad Data Vault; las funciones nuevas eliminan duplicación de código transversal.
@@ -1060,3 +1060,72 @@ erDiagram
 | Sat_Operacion_FechasEvento | ST Acumulativa | 23 | 4M+ (crece con cambios) | FechaRegistro, Hash_Operacion | ídem |
 | Sat_Transaccion_DatosEstables | ST Acumulativa | 34 | 7M+ (crece con cambios) | FechaRegistro, Hash_Transaccion | ídem |
 | Sat_Transaccion_Montos | ST Acumulativa | 36 | 7M+ (crece con cambios) | FechaRegistro, Hash_Transaccion | ídem |
+
+---
+
+## Incremento OPT-001 — Linaje transaccional sobre Change Data Feed
+
+**Fecha:** 2026-04-28 · **Estado:** implementado · **Disparador:** análisis del log `0904d79f-23aa-4bbd-9530-3f44e07eee64`.
+
+### Contexto y causa raíz
+
+En la última ejecución del pipeline los Satellites transaccionales tardaron ~18 min cargando 11,7 M de filas, pese a estar declarados como `@dp.append_flow`. El análisis del log detectó que dentro de cada microbatch los flujos `Hub_Transaccion`, `Link_Cliente_Transaccion`, `Sat_Transaccion_DatosEstables` y `Sat_Transaccion_Montos` ejecutaban un **LEFT ANTI JOIN batch contra el snapshot completo de la propia tabla destino** vía `procesar_hub`, `procesar_link` y `procesar_satellite_transaccional`. Esto introducía dos `Exchange hashpartitioning(Hash_Transaccion)` por microbatch sobre llaves SHA2-256 (64 B) y, en los Sat, un cómputo SHA2-512 sobre 30 columnas por fila. Adicionalmente, los 4 consumidores abrían 4 `DeltaSource[TRXPFL]` independientes en paralelo.
+
+### Premisa del dominio
+
+`TRXID` es **globalmente único entre ejecuciones** del generador (no se repite ni en re-ingestas ni en cargas posteriores). Por lo tanto la deduplicación cross-batch es **estructuralmente innecesaria** en el linaje transaccional. La única defensa requerida es la propia garantía de *exactly-once* de AutoLoader sobre TRXPFL.
+
+### Solución
+
+Se introduce una **vista compartida `vista_trxpfl_cdf`** (`@dp.view`, no materializada) que lee TRXPFL a través de su Change Data Feed (`delta.enableChangeDataFeed = "true"`, ya activo):
+
+```python
+spark.readStream
+    .option("readChangeFeed", "true")
+    .table("{catalogo}.{esquema}.TRXPFL")
+    .filter(col("_change_type").isin("insert", "update_postimage"))
+    .withColumn("VersionCarga", col("_commit_version"))
+    .withColumn("FechaCargaBronce", col("_commit_timestamp"))
+    .drop("_change_type", "_commit_version", "_commit_timestamp")
+```
+
+Los 4 flujos transaccionales pasan a leer `dp.read_stream("vista_trxpfl_cdf")` y eliminan las llamadas a los helpers de deduplicación. Los 2 Satellites añaden `VersionCarga` (long) y `FechaCargaBronce` (timestamp) al `select` final, aportando trazabilidad end-to-end del commit de Bronce que originó cada fila Data Vault.
+
+### Diagrama lógico
+
+```
+TRXPFL (Bronce ST + CDF habilitado)
+        │
+        ▼  spark.readStream.option("readChangeFeed","true")
+vista_trxpfl_cdf  (@dp.view, fuente única del linaje transaccional)
+        │
+        ├─► Hub_Transaccion          (@dp.append_flow, append puro)
+        ├─► Link_Cliente_Transaccion (@dp.append_flow, append puro)
+        ├─► Sat_Transaccion_DatosEstables (@dp.append_flow, append puro)
+        └─► Sat_Transaccion_Montos        (@dp.append_flow, append puro)
+```
+
+### Reglas y alcance
+
+- **Solo aplica al linaje transaccional (TRXPFL)**. Maestros (CMSTFL, BLNCFL) conservan `procesar_satellite`, `procesar_hub` y `procesar_link` porque sus snapshots día a día sí pueden contener filas duplicadas y/o cambios.
+- Las funciones `procesar_satellite_transaccional`, `procesar_hub`, `procesar_link` permanecen en `LSDPUtilidadPrincipal.py` para uso del linaje maestro.
+- `expect_all_or_fail` y `expect_all_or_drop` de los Sat se conservan sin cambios (validación por fila al escribir).
+- `cluster_by` y `table_properties` de las tablas destino se conservan sin cambios.
+
+### Esquema enriquecido en los Satellites
+
+| Columna | Tipo | Origen | Propósito |
+|---|---|---|---|
+| `VersionCarga` | long | `_commit_version` del CDF de TRXPFL | Identifica el commit Delta de Bronce que originó la fila. |
+| `FechaCargaBronce` | timestamp | `_commit_timestamp` del CDF de TRXPFL | Timestamp del commit de Bronce (independiente de `FechaRegistro`, que es el momento de escritura en Plata). |
+
+### Impacto esperado
+
+- Eliminación de los `Exchange hashpartitioning(Hash_Transaccion)` que dominaban el plan de cada microbatch.
+- Reducción de ~18 min a 1–2 min en la primera carga; en cargas incrementales el CDF entrega únicamente las filas del commit nuevo, llevando el tiempo a segundos.
+- Una sola lectura compartida (`vista_trxpfl_cdf`) en vez de 4 `DeltaSource[TRXPFL]`.
+- Trazabilidad nativa a nivel de commit Delta en los Satellites.
+
+### Tests
+
+`tests/test_notebooks_plata.py` actualizado: se relajaron `test_hubs_usan_procesar_hub`, `test_links_usan_procesar_link` y `test_satellites_usan_procesar_satellite` para excluir el linaje transaccional, y se añadieron 5 tests OPT-001 que verifican existencia/forma de la vista CDF, lectura desde `vista_trxpfl_cdf`, propagación de `VersionCarga`/`FechaCargaBronce` y ausencia de los helpers de deduplicación en los consumidores. Suite completa: 241/241 pasando.

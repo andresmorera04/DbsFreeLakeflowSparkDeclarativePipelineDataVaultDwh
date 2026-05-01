@@ -102,7 +102,8 @@ def test_hubs_usan_create_streaming_table():
 
 
 def test_hubs_usan_append_flow():
-    for nombre in HUBS:
+    # HubCliente y HubOperacion migrados a create_auto_cdc_flow; solo HubTransaccion conserva append_flow
+    for nombre in ["HubTransaccion"]:
         codigo = _codigo(nombre)
         assert "@dp.append_flow(" in codigo, f"{nombre}: falta @dp.append_flow"
 
@@ -127,10 +128,17 @@ def test_hubs_usan_dp_read_stream():
         assert "dp.read_stream(" in codigo, f"{nombre}: falta dp.read_stream"
 
 
-def test_hubs_usan_procesar_hub():
-    for nombre in HUBS:
+def test_hubs_cliente_operacion_usan_auto_cdc_flow():
+    # HubCliente y HubOperacion migrados a create_auto_cdc_flow SCD Type 1:
+    # deduplicación cross-batch gestionada por el motor via MERGE, sin full scan.
+    # FechaRegistro se actualiza en cada update (semántica "última vez vista", no DV2.0 estricto).
+    for nombre in ["HubCliente", "HubOperacion"]:
         codigo = _codigo(nombre)
-        assert "procesar_hub(" in codigo, f"{nombre}: falta procesar_hub"
+        assert "dp.create_auto_cdc_flow(" in codigo, f"{nombre}: falta dp.create_auto_cdc_flow"
+        assert "stored_as_scd_type=1" in codigo, f"{nombre}: debe usar stored_as_scd_type=1"
+        assert "except_column_list" not in codigo, f"{nombre}: no debe usar except_column_list (excluye columna del esquema target)"
+        assert "@dp.view" in codigo, f"{nombre}: falta @dp.view para la fuente CDC"
+        assert "procesar_hub(" not in codigo, f"{nombre}: no debe usar procesar_hub (migrado a AUTO CDC)"
 
 
 def test_hubs_usan_fuente_datos():
@@ -202,7 +210,8 @@ def test_links_usan_create_streaming_table():
 
 
 def test_links_usan_append_flow():
-    for nombre in LINKS:
+    # LinkClienteOperacion migrado a create_auto_cdc_flow; solo LinkClienteTransaccion conserva append_flow
+    for nombre in ["LinkClienteTransaccion"]:
         codigo = _codigo(nombre)
         assert "@dp.append_flow(" in codigo, f"{nombre}: falta @dp.append_flow"
 
@@ -226,10 +235,17 @@ def test_links_usan_dp_read_stream():
         assert "dp.read_stream(" in codigo, f"{nombre}: falta dp.read_stream"
 
 
-def test_links_usan_procesar_link():
-    for nombre in LINKS:
-        codigo = _codigo(nombre)
-        assert "procesar_link(" in codigo, f"{nombre}: falta procesar_link"
+def test_link_cliente_operacion_usa_auto_cdc_flow():
+    # LinkClienteOperacion migrado a create_auto_cdc_flow SCD Type 1:
+    # la combinación Hash_Cliente + Hash_Operacion queda única garantizada por el motor.
+    # FechaRegistro se actualiza en cada update (semántica "última vez vista", no DV2.0 estricto).
+    nombre = "LinkClienteOperacion"
+    codigo = _codigo(nombre)
+    assert "dp.create_auto_cdc_flow(" in codigo, f"{nombre}: falta dp.create_auto_cdc_flow"
+    assert "stored_as_scd_type=1" in codigo, f"{nombre}: debe usar stored_as_scd_type=1"
+    assert "except_column_list" not in codigo, f"{nombre}: no debe usar except_column_list (excluye columna del esquema target)"
+    assert "@dp.view" in codigo, f"{nombre}: falta @dp.view para la fuente CDC"
+    assert "procesar_link(" not in codigo, f"{nombre}: no debe usar procesar_link (migrado a AUTO CDC)"
 
 
 def test_link_cliente_operacion_columnas():
@@ -285,13 +301,15 @@ def test_satellites_tienen_expectations_hash_diferenciador():
 
 
 def test_satellites_usan_procesar_satellite():
-    """SatCliente y SatOperacion usan procesar_satellite; SatTransaccion usa procesar_satellite_transaccional."""
+    """SatCliente y SatOperacion usan procesar_satellite.
+
+    OPT-001: SatTransaccion ya no usa procesar_satellite_transaccional; lee de
+    la vista CDF compartida vista_trxpfl_cdf y aplica append puro porque TRXID
+    es globalmente único entre ejecuciones.
+    """
     for nombre in ["SatCliente", "SatOperacion"]:
         codigo = _codigo(nombre)
         assert "procesar_satellite(" in codigo, f"{nombre}: falta procesar_satellite"
-    # SatTransaccion usa la variante transaccional
-    codigo_trx = _codigo("SatTransaccion")
-    assert "procesar_satellite_transaccional(" in codigo_trx, "SatTransaccion: falta procesar_satellite_transaccional"
 
 
 def test_satellites_usan_hash_diferenciador():
@@ -403,3 +421,80 @@ def test_todos_usan_sha2_no_hash_simple():
         codigo = _codigo(nombre)
         assert "sha2" in codigo or "calcular_hash_hub" in codigo or "calcular_hash_diferenciador" in codigo, \
             f"{nombre}: debe usar SHA2"
+
+
+# ─── Change Data Feed obligatorio en todas las Streaming Tables de Plata ─────
+
+
+def test_todos_habilitan_change_data_feed():
+    """Hubs, Links y Satellites de Plata DEBEN declarar table_properties con CDF.
+
+    Requisito para refresh incremental de las MV de Oro: Enzyme requiere CDF
+    en todas las fuentes upstream de una MV para evitar COMPLETE_RECOMPUTE.
+    """
+    for nombre in TODOS:
+        codigo = _codigo(nombre)
+        assert "table_properties" in codigo, \
+            f"{nombre}: debe declarar table_properties en create_streaming_table"
+        assert '"delta.enableChangeDataFeed": "true"' in codigo, \
+            f"{nombre}: debe habilitar delta.enableChangeDataFeed=true"
+
+
+# ─── OPT-001 — Linaje transaccional sobre Change Data Feed ──────────────────
+
+
+VISTA_TRXPFL_CDF_PATH = TRANSFORMATIONS / "LSDPPlataVistaTRXPFLCDF.py"
+
+CONSUMIDORES_VISTA_CDF = {
+    "HubTransaccion": HUBS["HubTransaccion"],
+    "LinkClienteTransaccion": LINKS["LinkClienteTransaccion"],
+    "SatTransaccion": SATELLITES["SatTransaccion"],
+}
+
+
+def test_vista_trxpfl_cdf_existe():
+    assert VISTA_TRXPFL_CDF_PATH.exists(), \
+        f"OPT-001: falta {VISTA_TRXPFL_CDF_PATH.name} (vista CDF compartida)"
+
+
+def test_vista_trxpfl_cdf_usa_dp_view_y_change_feed():
+    codigo = VISTA_TRXPFL_CDF_PATH.read_text(encoding="utf-8")
+    assert "@dp.view(" in codigo, "vista_trxpfl_cdf debe declararse con @dp.view"
+    assert "vista_trxpfl_cdf" in codigo, "vista_trxpfl_cdf debe nombrarse explícitamente"
+    assert '"readChangeFeed"' in codigo and '"true"' in codigo, \
+        "vista_trxpfl_cdf debe leer con readChangeFeed=true"
+    assert "_change_type" in codigo, \
+        "vista_trxpfl_cdf debe filtrar por _change_type"
+    assert "VersionCarga" in codigo and "FechaCargaBronce" in codigo, \
+        "vista_trxpfl_cdf debe promover _commit_version y _commit_timestamp"
+
+
+def test_consumidores_transaccionales_leen_vista_cdf():
+    for nombre in CONSUMIDORES_VISTA_CDF:
+        codigo = _codigo(nombre)
+        assert 'dp.read_stream("vista_trxpfl_cdf")' in codigo, \
+            f"{nombre}: debe leer dp.read_stream(\"vista_trxpfl_cdf\")"
+        assert "dp.read_stream(fuente)" not in codigo, \
+            f"{nombre}: ya no debe consumir TRXPFL directamente (usar vista CDF)"
+        assert "dp.read_stream(_fuente)" not in codigo, \
+            f"{nombre}: ya no debe consumir TRXPFL directamente (usar vista CDF)"
+
+
+def test_sat_transaccion_propaga_columnas_cdf():
+    codigo = _codigo("SatTransaccion")
+    assert "VersionCarga" in codigo, "SatTransaccion debe propagar VersionCarga"
+    assert "FechaCargaBronce" in codigo, "SatTransaccion debe propagar FechaCargaBronce"
+
+
+def test_consumidores_transaccionales_no_usan_helpers_dedup():
+    """OPT-001: el linaje transaccional ya no usa procesar_hub/_link/_satellite_transaccional."""
+    helpers_prohibidos = (
+        "procesar_hub(",
+        "procesar_link(",
+        "procesar_satellite_transaccional(",
+    )
+    for nombre in CONSUMIDORES_VISTA_CDF:
+        codigo = _codigo(nombre)
+        for helper in helpers_prohibidos:
+            assert helper not in codigo, \
+                f"{nombre}: ya no debe invocar {helper.rstrip('(')} (append puro vía CDF)"

@@ -52,12 +52,30 @@
   - Mantener consistencia exacta de patrón con CMSTFL y TRXPFL
   - _Requirements: 6.1, 6.2, 6.3, 6.4, 6.5, 6.6, 6.7, 7.7, 7.8, 8.1, 8.2, 8.3, 8.5, 8.6, 10.1, 10.2, 10.3_
 
-- [x] 7. Importar los notebooks generadores de Parquets al repositorio
-- [x] 7.1 (P) Copiar los notebooks existentes al directorio de explorations
-  - Importar los notebooks generadores de Parquets ya desarrollados al directorio `explorations/` sin modificar su código fuente
+- [x] 7. Incorporar los notebooks generadores de Parquets al repositorio y mantenerlos
+- [x] 7.1 (P) Importar los notebooks existentes y evolucionar con mejoras de calidad
+  - Importar los notebooks generadores de Parquets al directorio `explorations/` sin modificar su lógica de negocio original
   - Verificar que no forman parte del pipeline LSDP de producción (no son invocados desde `transformations/`)
   - Confirmar que generan Parquets en la estructura de particionamiento `año=YYYY/mes=MM/dia=DD/`
   - _Requirements: 9.1, 9.2, 9.3, 9.4_
+
+- [x] 9. Implementar unicidad global de TRXID entre ejecuciones
+- [x] 9.1 Agregar widget y lógica de continuidad de secuencia al notebook NbGenerarTransaccionalCliente
+  - Agregar widget opcional `rutaRelativaParquetsExistentes` (valor por defecto vacío, 12 widgets en total)
+  - Construir `ruta_completa_existentes` aplicando la lógica de TipoStorage (Volume/S3) igual que las demás rutas
+  - Si la ruta no está vacía: leer todos los parquets de esa ruta, calcular `max(TRXSQ)` y establecer `id_inicio = max_trxsq + 1`; envolver en try/except con ValueError descriptivo
+  - Si la ruta está vacía: establecer `id_inicio = 1` (primer archivo)
+  - Cambiar `spark.range(1, cantidad_transacciones + 1)` por `spark.range(id_inicio, id_inicio + cantidad_transacciones)`
+  - Registrar `id_inicio` y el rango `TRXSQ` generado en el bloque de observabilidad final
+  - _Requirements: 11.1, 11.2, 11.3, 11.4, 11.5, 11.6, 11.7_
+
+- [x] 9.2 Crear tests estáticos del notebook de exploración transaccional
+  - Crear `tests/test_notebooks_exploracion.py` con 15 tests de análisis estático
+  - Verificar widget `rutaRelativaParquetsExistentes` con valor por defecto vacío
+  - Verificar que `spark.range` usa `id_inicio` y no el literal `1`
+  - Verificar presencia de `F.max`, `max_trxsq`, `id_inicio = 1`, `ruta_completa_existentes` y manejo de excepción
+  - Verificar ausencia de UDFs, `.cache()` y `.persist()`
+  - _Requirements: 11.1, 11.2, 11.3, 11.4, 11.5, 11.6_
 
 - [x] 8. Validar compatibilidad Serverless y consistencia entre fuentes
 - [x] 8.1 Verificar que todo el código cumple las restricciones de Serverless y es consistente
@@ -77,7 +95,7 @@
 
 | Criterio de Validación | Resultado |
 |------------------------|-----------|
-| Pruebas unitarias (`tests/`) | ✅ Passed |
+| Pruebas unitarias (`tests/`) | ✅ Passed (238 tests — incluye 15 nuevos en `test_notebooks_exploracion.py`) |
 | Generación de Parquets (`explorations/GenerarParquets/`) | ✅ Passed |
 | Ejecución pipeline LSDP Bronce (`transformations/LSDPBronce*.py`) | ✅ Passed |
 
@@ -89,7 +107,8 @@
 - `src/LSDP_Lab_DataVault_DWH/transformations/LSDPBronceCMSTFL.py` — Ingesta Bronce CMSTFL
 - `src/LSDP_Lab_DataVault_DWH/transformations/LSDPBronceTRXPFL.py` — Ingesta Bronce TRXPFL
 - `src/LSDP_Lab_DataVault_DWH/transformations/LSDPBronceBLNCFL.py` — Ingesta Bronce BLNCFL
-- `src/LSDP_Lab_DataVault_DWH/explorations/GenerarParquets/` — Notebooks generadores de datos
+- `src/LSDP_Lab_DataVault_DWH/explorations/GenerarParquets/NbGenerarTransaccionalCliente.py` — Notebook generador de datos transaccionales con unicidad de TRXID entre ejecuciones (widget `rutaRelativaParquetsExistentes`, `id_inicio` desde `max(TRXSQ)`)
+- `tests/test_notebooks_exploracion.py` — 15 tests estáticos del notebook de exploración transaccional
 - `tests/test_configuracion.py` — Tests del módulo de configuración
 - `tests/test_utilidad_principal.py` — Tests de funciones helper
 - `tests/test_notebooks_bronce.py` — Tests de los notebooks de Bronce

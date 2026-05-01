@@ -135,16 +135,32 @@ Todo el código debe cumplir al 100% las restricciones de Databricks Free Editio
 
 ---
 
-### Requisito 9: Importación de Notebooks Generadores de Parquets
+### Requisito 9: Notebooks Generadores de Parquets en Explorations
 
-**Objetivo:** Como ingeniero de datos, quiero importar los notebooks generadores de archivos Parquet ya desarrollados al directorio `explorations/` del proyecto, para que la trazabilidad del proyecto contemple estos artefactos como parte del repositorio.
+**Objetivo:** Como ingeniero de datos, quiero que los notebooks generadores de archivos Parquet residan en el directorio `explorations/` del proyecto con la funcionalidad necesaria para generar datos de prueba consistentes, para que la trazabilidad del proyecto contemple estos artefactos y los datos generados sean íntegros entre ejecuciones.
 
 #### Criterios de Aceptación
 
-1. The repositorio shall contener el directorio `src/LSDP_Lab_DataVault_DWH/explorations/` como ubicación estándar para los notebooks importados.
-2. The notebooks generadores de Parquets shall importarse sin modificaciones al código fuente, preservando su funcionalidad original.
+1. The repositorio shall contener el directorio `src/LSDP_Lab_DataVault_DWH/explorations/` como ubicación estándar para los notebooks generadores de Parquets.
+2. The notebooks generadores de Parquets shall evolucionar con el proyecto para incorporar mejoras de calidad de datos (como unicidad de claves entre ejecuciones) sin que ello comprometa la compatibilidad con el pipeline de producción.
 3. The notebooks importados shall no formar parte del pipeline LSDP de producción (no son invocados por los notebooks de `transformations/`).
 4. The notebooks importados shall ser capaces de generar archivos Parquet en la estructura de particionamiento `año=YYYY/mes=MM/dia=DD/` dentro de la ruta de Landing Zone configurada en los parámetros del pipeline.
+
+---
+
+### Requisito 11: Unicidad Global de TRXID entre Ejecuciones del Notebook Transaccional
+
+**Objetivo:** Como ingeniero de datos, quiero que el notebook `NbGenerarTransaccionalCliente` garantice que los valores de `TRXID` sean únicos e irrepetibles entre todas las ejecuciones del notebook, para que los parquets acumulados en la Landing Zone no contengan claves duplicadas que corrompan los Hubs de la medalla de Plata.
+
+#### Criterios de Aceptación
+
+1. The notebook `NbGenerarTransaccionalCliente` shall aceptar un widget opcional `rutaRelativaParquetsExistentes` (valor por defecto vacío) que indique la ruta relativa de la carpeta raíz de parquets TRXPFL ya generados, sin incluir las subcarpetas de particionamiento `año=/mes=/dia=`.
+2. When el widget `rutaRelativaParquetsExistentes` tenga un valor no vacío, the notebook shall leer todos los parquets disponibles en esa ruta, calcular el valor máximo de la columna `TRXSQ` (sufijo numérico de `TRXID`) y establecer el inicio de la nueva secuencia en `max(TRXSQ) + 1`.
+3. When el widget `rutaRelativaParquetsExistentes` esté vacío, the notebook shall interpretar que se está generando el primer archivo transaccional e iniciar la secuencia en 1.
+4. The notebook shall construir la ruta completa de los parquets existentes aplicando la misma lógica de `TipoStorage` (Volume o AmazonS3) que se usa para las demás rutas del notebook.
+5. If los parquets existentes no pueden leerse (ruta inexistente, permisos, formato incorrecto), the notebook shall lanzar un `ValueError` con un mensaje descriptivo que incluya la ruta intentada.
+6. The notebook shall usar `spark.range(id_inicio, id_inicio + cantidad_transacciones)` como base de generación, garantizando que ningún `id` (y por tanto ningún `TRXID`) se repita entre ejecuciones.
+7. The notebook shall registrar en el bloque de observabilidad final el rango exacto de `TRXSQ` generado (`id_inicio` — `id_inicio + cantidad_transacciones - 1`) para trazabilidad operacional.
 
 ---
 

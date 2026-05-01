@@ -354,7 +354,7 @@ def test_procesar_satellite_transaccional_no_usa_row_number():
 
 
 def test_procesar_satellite_transaccional_usa_left_anti_join():
-    """Verifica deduplicación con LEFT ANTI JOIN por hash + fecha."""
+    """Verifica deduplicación con LEFT ANTI JOIN por hash_col solo (B.1)."""
     for node in ast.walk(_tree()):
         if isinstance(node, ast.FunctionDef) and node.name == "procesar_satellite_transaccional":
             src = ast.unparse(node)
@@ -381,6 +381,54 @@ def test_procesar_satellite_transaccional_captura_analysis_exception():
         if isinstance(node, ast.FunctionDef) and node.name == "procesar_satellite_transaccional":
             src = ast.unparse(node)
             assert "AnalysisException" in src
+            return
+    assert False, "procesar_satellite_transaccional no encontrada"
+
+
+def test_procesar_satellite_transaccional_deduplica_por_hash_transaccion_solo():
+    """B.1: el ANTI JOIN debe usar solo [hash_col], nunca [hash_col, fecha_col].
+
+    Una transacción ATM es inmutable. Deduplicar por (hash_col, fecha_col) permite
+    que el mismo TRXID llegue con TRXDT diferente (re-generaciones de lab) y pase
+    el ANTI JOIN como 'registro nuevo', produciendo Q = N en Hec_Transacciones_ATM.
+    """
+    for node in ast.walk(_tree()):
+        if isinstance(node, ast.FunctionDef) and node.name == "procesar_satellite_transaccional":
+            # Excluir docstring del análisis (primera sentencia si es Constant)
+            stmts = node.body
+            if stmts and isinstance(stmts[0], ast.Expr) and isinstance(stmts[0].value, ast.Constant):
+                stmts = stmts[1:]
+            src = ast.unparse(ast.Module(body=stmts, type_ignores=[]))
+            assert "join(existente, [hash_col], 'left_anti')" in src or \
+                   'join(existente, [hash_col], "left_anti")' in src, (
+                "procesar_satellite_transaccional debe hacer anti-join SOLO por [hash_col] "
+                "(no por [hash_col, fecha_col])"
+            )
+            assert "[hash_col, fecha_col]" not in src, (
+                "fecha_col NO debe ser llave de deduplicación en el código (B.1)"
+            )
+            return
+    assert False, "procesar_satellite_transaccional no encontrada"
+
+
+def test_procesar_satellite_transaccional_dropduplicates_intra_batch_antes_de_join():
+    """B.1: dropDuplicates([hash_col]) debe ejecutarse ANTES del LEFT ANTI JOIN."""
+    for node in ast.walk(_tree()):
+        if isinstance(node, ast.FunctionDef) and node.name == "procesar_satellite_transaccional":
+            # Excluir docstring para no confundir índices
+            stmts = node.body
+            if stmts and isinstance(stmts[0], ast.Expr) and isinstance(stmts[0].value, ast.Constant):
+                stmts = stmts[1:]
+            src = ast.unparse(ast.Module(body=stmts, type_ignores=[]))
+            assert "dropDuplicates([hash_col])" in src, (
+                "procesar_satellite_transaccional debe aplicar dropDuplicates([hash_col]) "
+                "para deduplicación intra-batch"
+            )
+            idx_drop = src.find("dropDuplicates([hash_col])")
+            idx_try = src.find("try:")
+            assert idx_drop != -1 and idx_try != -1 and idx_drop < idx_try, (
+                "dropDuplicates debe ejecutarse ANTES del bloque try/ANTI JOIN"
+            )
             return
     assert False, "procesar_satellite_transaccional no encontrada"
 

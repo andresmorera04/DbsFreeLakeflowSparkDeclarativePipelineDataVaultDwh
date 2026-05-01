@@ -2,9 +2,15 @@
 # ---------------------------------------------------------------------------
 # LSDPPlataSatTransaccion — 2 Satellites de Transacción (Streaming Tables Acumulativas)
 # ---------------------------------------------------------------------------
-# Fuente: {catalogo}.{esquema}.TRXPFL (lectura única compartida)
-# Sat_Transaccion_DatosEstables  · 34 cols
-# Sat_Transaccion_Montos         · 36 cols
+# Fuente: vista_trxpfl_cdf  (lectura streaming sobre Change Data Feed de TRXPFL)
+# Sat_Transaccion_DatosEstables  · 36 cols (incl. VersionCarga, FechaCargaBronce)
+# Sat_Transaccion_Montos         · 38 cols (incl. VersionCarga, FechaCargaBronce)
+#
+# Append-Only puro: TRXID es globalmente único entre ejecuciones, por lo que
+# la deduplicación cross-batch es estructuralmente innecesaria. La vista
+# compartida vista_trxpfl_cdf entrega solo los eventos del último commit
+# (filtrados a insert/update_postimage) y promueve _commit_version y
+# _commit_timestamp como VersionCarga y FechaCargaBronce.
 # ---------------------------------------------------------------------------
 
 from pyspark import pipelines as dp
@@ -19,7 +25,6 @@ from utilities.LSDPConfiguracion import (
 from utilities.LSDPUtilidadPrincipal import (
     calcular_hash_hub,
     calcular_hash_diferenciador,
-    procesar_satellite_transaccional,
     clasificar_por_umbral,
 )
 
@@ -54,9 +59,9 @@ dp.create_streaming_table(
 )
 
 
-# ─── Lectura única de Bronce (streaming para append_flow) ─────────────────
+# ─── Lectura única de la vista CDF (streaming para append_flow) ─────────
 def _leer_trxpfl():
-    return dp.read_stream(_fuente)
+    return dp.read_stream("vista_trxpfl_cdf")
 
 
 # ─── Sat_Transaccion_DatosEstables ───────────────────────────────────────
@@ -107,6 +112,8 @@ def sat_transaccion_datos_estables():
         F.col("TRXTS").alias("timestamp_transaccion"),
         F.col("TRXUS").alias("timestamp_actualizacion"),
         clasificacion_canal_atm.alias("ClasificacionCanalATM"),
+        F.col("VersionCarga").alias("VersionCarga"),
+        F.col("FechaCargaBronce").alias("FechaCargaBronce"),
     )
 
     cols_negocio = [
@@ -130,11 +137,7 @@ def sat_transaccion_datos_estables():
     datos = datos.withColumn("FechaRegistro", F.current_timestamp())
     datos = datos.withColumn("FuenteDatos", F.lit(_fuente))
 
-    cambios = procesar_satellite_transaccional(
-        spark, _catalogo_plata, _esquema_plata,
-        "Sat_Transaccion_DatosEstables", "Hash_Transaccion", "fecha_transaccion", datos,
-    )
-    return cambios.select(
+    return datos.select(
         "FechaRegistro", "Hash_Transaccion",
         "fecha_transaccion",
         "tipo_transaccion", "moneda_transaccion", "estado_transaccion",
@@ -148,6 +151,7 @@ def sat_transaccion_datos_estables():
         "fecha_actualizacion_trx", "fecha_origen_trx", "fecha_kyc_trx",
         "timestamp_transaccion", "timestamp_actualizacion",
         "ClasificacionCanalATM",
+        "VersionCarga", "FechaCargaBronce",
         "Hash_Diferenciador", "FuenteDatos",
     )
 
@@ -193,6 +197,8 @@ def sat_transaccion_montos():
         F.col("TRXPT").alias("monto_principal_prestamo"),
         clasificar_por_umbral(F.col("TRXAMT"), UMBRAL_RANGO_MONTO).alias("RangoMontoTransaccion"),
         clasificar_por_umbral(F.col("TRXFR"), UMBRAL_RIESGO_FRAUDE).alias("NivelRiesgoFraude"),
+        F.col("VersionCarga").alias("VersionCarga"),
+        F.col("FechaCargaBronce").alias("FechaCargaBronce"),
     )
 
     cols_negocio = [
@@ -216,11 +222,7 @@ def sat_transaccion_montos():
     datos = datos.withColumn("FechaRegistro", F.current_timestamp())
     datos = datos.withColumn("FuenteDatos", F.lit(_fuente))
 
-    cambios = procesar_satellite_transaccional(
-        spark, _catalogo_plata, _esquema_plata,
-        "Sat_Transaccion_Montos", "Hash_Transaccion", "fecha_transaccion", datos,
-    )
-    return cambios.select(
+    return datos.select(
         "FechaRegistro", "Hash_Transaccion",
         "identificador_cliente", "fecha_transaccion", "monto_principal",
         "comision_transaccion", "saldo_posterior", "saldo_anterior",
@@ -232,5 +234,6 @@ def sat_transaccion_montos():
         "margen_interes", "monto_neto", "monto_original", "monto_inversion",
         "descuento_transaccion", "monto_principal_prestamo",
         "RangoMontoTransaccion", "NivelRiesgoFraude",
+        "VersionCarga", "FechaCargaBronce",
         "Hash_Diferenciador", "FuenteDatos",
     )
