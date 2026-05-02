@@ -101,7 +101,7 @@ La medalla de Plata implementa el **Raw Vault del modelado Data Vault 2.0**, com
 | **Hub_Transaccion** | Streaming Table Acumulativa | `dp.create_streaming_table()` + `@dp.append_flow()` | TRXID es globalmente único entre ejecuciones; `procesar_hub()` con LEFT ANTI JOIN es suficiente y su coste es amortizado por el volumen bajo de re-apariciones. |
 | **Link_Cliente_Operacion** | Streaming Table Acumulativa | `dp.create_streaming_table()` + `@dp.view` + `dp.create_auto_cdc_flow()` | Misma optimización que Hub_Cliente/Hub_Operacion: el par (Hash_Cliente, Hash_Operacion) se garantiza único mediante MERGE gestionado por el motor sin full scan. |
 | **Link_Cliente_Transaccion** | Streaming Table Acumulativa | `dp.create_streaming_table()` + `@dp.append_flow()` | La relación Cliente↔Transacción es 1:1 con TRXID único; `procesar_link()` con LEFT ANTI JOIN es suficiente. |
-| **Satellites** (9) | Streaming Table Acumulativa | `dp.create_streaming_table()` + `@dp.append_flow()` | Los Satellites son estrictamente **Append-Only** y acumulan historial indefinidamente. La función `procesar_satellite()` detecta cambios vía `Hash_Diferenciador` con LEFT JOIN+WHERE. La variante `procesar_satellite_transaccional()` usa LEFT ANTI JOIN por `Hash_{entity}` solo (primera-escritura-gana) para Satellites transaccionales — una transacción ATM es inmutable. |
+| **Satellites** (9) | Streaming Table Acumulativa | `dp.create_streaming_table()` + `@dp.append_flow()` | Los Satellites son estrictamente **Append-Only** y acumulan historial indefinidamente. **Sat_Cliente_\*** y **Sat_Operacion_\***: la función `procesar_satellite()` detecta cambios vía `Hash_Diferenciador` con LEFT JOIN+WHERE (ROW_NUMBER para estado actual). **Sat_Transaccion_\***: flujo puro sin helper de deduplicación — `vista_trxpfl_cdf` entrega solo los eventos del último commit (CDF), y TRXID es globalmente único entre ejecuciones por diseño. `procesar_satellite_transaccional()` existe en LSDPUtilidadPrincipal pero no es invocada en la implementación actual. |
 
 > **Decisión de diseño crítica**: Todos los elementos de Plata (Hubs, Links y Satellites) usan el patrón `dp.create_streaming_table()` como base. Esto garantiza que **ningún registro existente sea eliminado o reprocesado**, preservando la inmutabilidad histórica inherente al modelo Data Vault 2.0. La estrategia de escritura varía por entidad:
 >
@@ -110,7 +110,8 @@ La medalla de Plata implementa el **Raw Vault del modelado Data Vault 2.0**, com
 > - **Hub_Transaccion**: `@dp.append_flow()` + función `procesar_hub(spark, catalogo_plata, esquema_plata, nombre_hub, columnas_llave, datos_nuevos)` — LEFT ANTI JOIN por `IdentificadorTransaccion` contra la tabla existente. `AnalysisException` para primera ejecución.
 > - **Link_Cliente_Operacion** (OPT-001): `dp.create_auto_cdc_flow(stored_as_scd_type=1)` con `@dp.view` como fuente — MERGE gestionado por el motor (O(delta), sin full scan). Garantiza unicidad del par `(Hash_Cliente, Hash_Operacion)`. `FechaRegistro` se actualiza en cada MERGE.
 > - **Link_Cliente_Transaccion**: `@dp.append_flow()` + función `procesar_link(spark, catalogo_plata, esquema_plata, nombre_link, columnas_hash, datos_nuevos)` — LEFT ANTI JOIN por columnas de hash. `AnalysisException` para primera ejecución.
-> - **Satellites**: función `procesar_satellite(spark, catalogo_plata, esquema_plata, nombre_sat, hash_col, datos_nuevos)` — LEFT JOIN+WHERE sobre `Hash_Diferenciador` con ROW_NUMBER para Satellites de estado (Cliente, Operación). Función `procesar_satellite_transaccional(spark, catalogo_plata, esquema_plata, nombre_sat, hash_col, fecha_col, datos_nuevos)` — LEFT ANTI JOIN por `[hash_col]` solo para Satellites transaccionales (Transacción). Una transacción ATM es un hecho inmutable: la llave `hash_col` es suficiente para garantizar unicidad (corrección B.1). `fecha_col` se preserva en la firma por compatibilidad pero no participa en la deduplicación.
+> - **Satellites de estado (Cliente, Operación)**: función `procesar_satellite(spark, catalogo_plata, esquema_plata, nombre_sat, hash_col, datos_nuevos)` — LEFT JOIN+WHERE sobre `Hash_Diferenciador` con ROW_NUMBER para obtener el estado actual por entidad. Solo se insertan registros donde el hash cambió o la entidad no existe.
+> - **Satellites transaccionales (Transacción)**: `@dp.append_flow()` puro — sin llamada a ningún helper de deduplicación. La fuente `vista_trxpfl_cdf` (CDF sobre TRXPFL) entrega solo los eventos del último commit; TRXID es globalmente único entre ejecuciones. `procesar_satellite_transaccional()` existe en LSDPUtilidadPrincipal.py pero **no es invocada** por los notebooks actuales (`LSDPPlataSatTransaccion.py`).
 >
 > **Lectura de Bronce**:
 > - Entidades con `@dp.append_flow()`: leen Bronce con `dp.read_stream(f"{catalogo}.{esquema}.{Nombre}")` dentro del flujo.
@@ -226,7 +227,7 @@ La medalla de Oro implementa un **Modelo Estrella** (Star Schema) orientado al a
 
 | Tabla | Fuente (Plata) | Descripción |
 |-------|-----------------|-------------|
-| **Fact_Transacciones_ATM** | Hub_Transaccion + Satellites de Transacción + Links correspondientes | Registra la transaccionalidad específica de **Retiros (Débitos)** y **Depósitos (Créditos)** realizados en cajeros automáticos (ATMs). Se relaciona con las tres dimensiones mediante llaves surrogadas o hashes. |
+| **Hec_Transacciones_ATM** | `Trx_ATM_Stream` (ST `temporary=True`) + `Map_Cliente_Operacion_Dominante` (MV `temporary=True`) | Vista Materializada (`@dp.materialized_view`) que registra la transaccionalidad de **Retiros (DATM)** y **Depósitos (CATM)** en ATMs. Las FKs `DimIdCliente`/`DimIdOperacion` se pre-resuelven en `Trx_ATM_Stream`, dejando el plan del hecho libre de joins para refresh incremental por CDF. |
 
 **Métricas clave esperadas**: Cantidad de depósitos (créditos), cantidad de retiros (débitos), monto total de depósitos, monto total de retiros, monto promedio de depósitos, monto promedio de retiros — todo desglosable por cliente, por operación/cuenta y por fecha.
 
@@ -294,7 +295,7 @@ El repositorio Git del proyecto sigue una estructura organizada en tres áreas p
 DbsFreeLakeflowSparkDeclarativePipelineDataVaultDwh/
 │
 ├── README.md                          ← Descripción general del proyecto y guía de inicio rápido
-├── SYSTEM2.md                         ← Spec-Driven Development completa — especificación inicial de la solución (este archivo)
+├── SYSTEM.md                          ← Spec-Driven Development completa — especificación inicial de la solución (este archivo)
 ├── AGENTS.md                          ← Configuración de agentes AI-DLC y comandos Kiro
 │
 ├── .github/
@@ -2494,7 +2495,7 @@ def dim_tiempo():
     )
 ```
 
-### Fact_Transacciones_ATM
+### Hec_Transacciones_ATM
 
 Se construye a partir del filtrado de transacciones ATM (DATM, CATM) del Data Vault de Plata. Las FK referencian las dimensiones mediante sus **DimId** (llaves subrogadas). La relación con Dim_Operacion se resuelve **transitivamente a través del cliente** (ya que no existe Link_Operacion_Transaccion).
 
@@ -2528,7 +2529,7 @@ Se construye a partir del filtrado de transacciones ATM (DATM, CATM) del Data Va
 
 ```python
 @dp.materialized_view(
-    name=f"{catalogo_oro}.{esquema_oro}.Fact_Transacciones_ATM",
+    name=f"{catalogo_oro}.{esquema_oro}.Hec_Transacciones_ATM",
     cluster_by=["FechaClave", "DimIdCliente"]
 )
 @dp.expect_all_or_fail({
@@ -2536,7 +2537,7 @@ Se construye a partir del filtrado de transacciones ATM (DATM, CATM) del Data Va
     "fecha_clave_no_nula": "FechaClave IS NOT NULL",
     "tipo_transaccion_atm": "TipoTransaccion IN ('DATM', 'CATM')"
 })
-def fact_transacciones_atm():
+def hec_transacciones_atm():
     from pyspark.sql.window import Window
 
     # --- Datos de Plata ---
@@ -2982,7 +2983,7 @@ Cada Link relaciona **exactamente dos Hubs** (alcance del laboratorio):
 | Dim_Cliente | `DimIdCliente` |
 | Dim_Operacion | `DimIdOperacion` |
 | Dim_Tiempo | `FechaClave` |
-| Fact_Transacciones_ATM | `FechaClave`, `DimIdCliente` |
+| Hec_Transacciones_ATM | `FechaClave`, `DimIdCliente` |
 
 > **Regla de ordenamiento de columnas**: Las columnas de Liquid Clustering deben definirse en las **primeras posiciones** del esquema de cada tabla. Según la documentación oficial de Databricks (https://docs.databricks.com/aws/en/delta/clustering), las columnas de LC deben tener estadísticas recopiladas, y por defecto solo las primeras 32 columnas de una tabla Delta tienen estadísticas. Todos los esquemas de este documento ya reflejan este ordenamiento.
 
@@ -3055,11 +3056,11 @@ table_properties={
 
 | # | Nombre | Condición SQL | Decorador | Severidad | Tabla(s) Aplicable(s) | Justificación |
 |---|--------|---------------|-----------|-----------|----------------------|---------------|
-| E7 | `dim_id_cliente_no_nulo` | `DimIdCliente IS NOT NULL` | `@dp.expect_or_fail` | **FAIL** | Dim_Cliente, Fact_Transacciones_ATM | La llave subrogada es esencial para la integridad referencial del modelo estrella. |
+| E7 | `dim_id_cliente_no_nulo` | `DimIdCliente IS NOT NULL` | `@dp.expect_or_fail` | **FAIL** | Dim_Cliente, Hec_Transacciones_ATM | La llave subrogada es esencial para la integridad referencial del modelo estrella. |
 | E8 | `dim_id_operacion_no_nulo` | `DimIdOperacion IS NOT NULL` | `@dp.expect_or_fail` | **FAIL** | Dim_Operacion | Llave subrogada de la dimensión de operaciones. |
-| E9 | `fecha_clave_no_nula` | `FechaClave IS NOT NULL` | `@dp.expect_or_fail` | **FAIL** | Fact_Transacciones_ATM | FK obligatoria hacia Dim_Tiempo. |
-| E10 | `tipo_transaccion_atm` | `TipoTransaccion IN ('DATM', 'CATM')` | `@dp.expect_or_fail` | **FAIL** | Fact_Transacciones_ATM | La tabla de hechos solo debe contener transacciones ATM. |
-| E11 | `monto_principal_positivo_oro` | `MontoPrincipal > 0` | `@dp.expect_or_drop` | **DROP** | Fact_Transacciones_ATM | Montos deben ser positivos en la tabla de hechos. |
+| E9 | `fecha_clave_no_nula` | `FechaClave IS NOT NULL` | `@dp.expect_or_fail` | **FAIL** | Hec_Transacciones_ATM | FK obligatoria hacia Dim_Tiempo. |
+| E10 | `tipo_transaccion_atm` | `TipoTransaccion IN ('DATM', 'CATM')` | `@dp.expect_or_fail` | **FAIL** | Hec_Transacciones_ATM | La tabla de hechos solo debe contener transacciones ATM. |
+| E11 | `monto_principal_positivo_oro` | `MontoPrincipal > 0` | `@dp.expect_or_drop` | **DROP** | Hec_Transacciones_ATM | Montos deben ser positivos en la tabla de hechos. |
 
 ### 4.4 Expectations Agrupadas (Patrón Recomendado)
 
@@ -3079,7 +3080,7 @@ validaciones_sat_trx_montos = {
     "hash_diferenciador_completo": "Hash_Diferenciador IS NOT NULL"
 }
 
-# Expectations para Fact_Transacciones_ATM (Oro)
+# Expectations para Hec_Transacciones_ATM (Oro)
 validaciones_fact_atm = {
     "dim_id_cliente_no_nulo": "DimIdCliente IS NOT NULL",
     "fecha_clave_no_nula": "FechaClave IS NOT NULL",
@@ -3098,18 +3099,18 @@ validaciones_fact_atm = {
 
 | # | Riesgo | Probabilidad | Impacto | Mitigación | Estado |
 |---|--------|-------------|---------|------------|--------|
-| R1 | **TRXID tipo StringType** vs LongType documentado | Confirmado | Medio | Todo el código de hash refleja StringType. Se actualizará SYSTEM2.md. | ✅ Aprobada |
-| R2 | **TRXRK/TRXFR escala 0-100** vs documentación 0-1 | Confirmado | Alto | Umbrales de campos calculados ajustados a escala 0-100. Se actualizará SYSTEM2.md. | ✅ Aprobada |
-| R3 | **Campo BLCU** en Parquet vs `BLCN` en SYSTEM.md | Confirmado | Medio | Usar `BLCU` en todo el código. Se actualizará SYSTEM2.md. | ✅ Aprobada |
-| R4 | **Volumetría variable** entre snapshots (250K vs 215K en TRXPFL) | Observado | Medio | El procesamiento Append Only del Data Vault maneja variaciones naturalmente. Se documentará en SYSTEM2.md. | ✅ Aprobada |
-| R5 | **TRXDT = fecha del snapshot** (no fecha individual) | Observado | Bajo | Para Fact_Transacciones_ATM, usar TRXDT como fecha dimensional (fecha de corte). Se documentará en SYSTEM2.md. | ✅ Aprobada |
-| R6 | **CUSTID reasignado** entre snapshots para mismo TRXID (99.8% cambio) | Observado | Alto | Los Hubs y Links capturan nuevas combinaciones como registros nuevos (Append Only). Se documentará en SYSTEM2.md. | ✅ Aprobada |
-| R7 | **BLNCFL sin variación** entre 2 snapshots (0% cambio) | Observado | Bajo | Los Satellites no insertarán duplicados gracias al Hash_Diferenciador. Se documentará en SYSTEM2.md. | ✅ Aprobada |
+| R1 | **TRXID tipo StringType** vs LongType documentado | Confirmado | Medio | Todo el código de hash refleja StringType. Corregido en SYSTEM.md (incremento `documentacion-consolidada-y-metadata`). | ✅ Aprobada |
+| R2 | **TRXRK/TRXFR escala 0-100** vs documentación 0-1 | Confirmado | Alto | Umbrales de campos calculados ajustados a escala 0-100. Corregido en SYSTEM.md. | ✅ Aprobada |
+| R3 | **Campo BLCU** en Parquet vs `BLCN` en SYSTEM.md | Confirmado | Medio | Usar `BLCU` en todo el código. Corregido en SYSTEM.md. | ✅ Aprobada |
+| R4 | **Volumetría variable** entre snapshots (250K vs 215K en TRXPFL) | Observado | Medio | El procesamiento Append Only del Data Vault maneja variaciones naturalmente. Documentado en SYSTEM.md. | ✅ Aprobada |
+| R5 | **TRXDT = fecha del snapshot** (no fecha individual) | Observado | Bajo | Para Hec_Transacciones_ATM, usar TRXDT como fecha dimensional (fecha de corte). Documentado en SYSTEM.md. | ✅ Aprobada |
+| R6 | **CUSTID reasignado** entre snapshots para mismo TRXID (99.8% cambio) | Observado | Alto | Los Hubs y Links capturan nuevas combinaciones como registros nuevos (Append Only). Documentado en SYSTEM.md. | ✅ Aprobada |
+| R7 | **BLNCFL sin variación** entre 2 snapshots (0% cambio) | Observado | Bajo | Los Satellites no insertarán duplicados gracias al Hash_Diferenciador. Documentado en SYSTEM.md. | ✅ Aprobada |
 | R8 | **Concurrencia limitada** por Free Edition (max 5 concurrent tasks) | Diseño | Medio | Se maneja según lo propone LSDP: el framework gestiona automáticamente la secuenciación y paralelización de las tablas del pipeline según sus dependencias. | ✅ Aprobada |
-| R9 | **Tamaño del Hash_Diferenciador** para Satellites con muchas columnas | Diseño | Bajo | SHA2-512 es determinístico. `concat_ws` maneja correctamente nulos. Performance aceptable. Se documentará en SYSTEM2.md. | ✅ Aprobada |
-| R10 | **Dimensión Tiempo** requiere persistencia acumulativa | Diseño | Medio | Se implementa como **Streaming Table acumulativa** (`dp.create_streaming_table()` + `@dp.append_flow()`). Fechas existentes persisten y son inmutables. Cada ejecución valida y agrega solo las fechas faltantes de hoy y ayer. | ✅ Aprobada |
-| R11 | **Integridad referencial parcial** — 5.7% de clientes sin transacciones | Observado | Bajo | LEFT JOIN en Links y en Fact_Transacciones_ATM. Clientes sin transacciones existirán en dimensiones pero no en la tabla de hechos. Se documentará en SYSTEM2.md. | ✅ Aprobada |
-| R12 | **Nuevos clientes diarios** (+450, 0.6%) podrían crecer | Observado | Bajo | Diseño Append Only maneja crecimiento orgánico. Liquid Clustering optimiza incrementalmente. DimId persistente en dimensiones absorbe nuevos registros sin afectar existentes. Se documentará en SYSTEM2.md. | ✅ Aprobada |
+| R9 | **Tamaño del Hash_Diferenciador** para Satellites con muchas columnas | Diseño | Bajo | SHA2-512 es determinístico. `concat_ws` maneja correctamente nulos. Performance aceptable. Documentado en SYSTEM.md. | ✅ Aprobada |
+| R10 | **Dimensión Tiempo** requiere refresh incremental nativo | Diseño | Medio | Implementada como `@dp.materialized_view` con refresh incremental (no ST). Fuente: `Sat_Transaccion_Montos.fecha_transaccion` (valores distintos). Documentado en SYSTEM.md. | ✅ Aprobada |
+| R11 | **Integridad referencial parcial** — 5.7% de clientes sin transacciones | Observado | Bajo | LEFT JOIN en Links y en Hec_Transacciones_ATM. Clientes sin transacciones existen en dimensiones pero no en la tabla de hechos. Documentado en SYSTEM.md. | ✅ Aprobada |
+| R12 | **Nuevos clientes diarios** (+450, 0.6%) podrían crecer | Observado | Bajo | Diseño Append Only maneja crecimiento orgánico. Liquid Clustering optimiza incrementalmente. DimId estable (`xxhash64`) en dimensiones absorbe nuevos registros sin afectar existentes. Documentado en SYSTEM.md. | ✅ Aprobada |
 
 ---
 
@@ -3128,7 +3129,7 @@ validaciones_fact_atm = {
 | Tablas Link | `Link_{NombreHub1}_{NombreHub2}` | `Link_Cliente_Operacion` |
 | Tablas Satellite | `Sat_{NombreHubOLink}_{Concepto}` | `Sat_Cliente_DatosEstables`, `Sat_Cliente_Montos` |
 | Dimensiones | `Dim_{NombreEntidad}` | `Dim_Cliente`, `Dim_Tiempo`, `Dim_Operacion` |
-| Tabla de Hechos | `Fact_{NombreConcepto}` | `Fact_Transacciones_ATM` |
+| Tabla de Hechos | `Hec_{NombreConcepto}` | `Hec_Transacciones_ATM` |
 | Streaming Tables Temporal | `{NombreOrigen}_temp` | `CMSTFL_temp` |
 | Vistas Materializadas Bronce | `{NombreOrigen}` (nombre directo del Parquet) | `CMSTFL`, `TRXPFL`, `BLNCFL` |
 | Columnas Hash | `Hash_{NombreEntidad}` o `Hash_Diferenciador` | `Hash_Cliente`, `Hash_Diferenciador` |
@@ -3158,7 +3159,7 @@ La solución **no debe contener valores hard-coded**. Toda configuración variab
 | `03_Plata_Links` | Plata | Tablas Link_Cliente_Operacion, Link_Cliente_Transaccion |
 | `04_Plata_Satellites` | Plata | Todos los Satellites con sus campos calculados y expectations |
 | `05_Oro_Dimensiones` | Oro | Dim_Cliente, Dim_Operacion, Dim_Tiempo |
-| `06_Oro_Hechos` | Oro | Fact_Transacciones_ATM |
+| `06_Oro_Hechos` | Oro | Hec_Transacciones_ATM |
 
 > **Nota**: La estructura definitiva de notebooks se refinará en la fase de Design del SDD.
 
@@ -3197,6 +3198,21 @@ La solución **no debe contener valores hard-coded**. Toda configuración variab
 ---
 
 ---
+
+---
+
+# Historial de Cambios
+
+| Fecha | Incremento SDD | Cambio | Referencia |
+|-------|---------------|--------|------------|
+| 2026-05-01 | `documentacion-consolidada-y-metadata` | Corrección: `Fact_Transacciones_ATM` → `Hec_Transacciones_ATM` (nombre real implementado) | [tasks.md#2.1](/.kiro/specs/documentacion-consolidada-y-metadata/tasks.md) |
+| 2026-05-01 | `documentacion-consolidada-y-metadata` | Corrección: `SYSTEM2.md` → `SYSTEM.md` en sección de estructura del repositorio | [tasks.md#2.1](/.kiro/specs/documentacion-consolidada-y-metadata/tasks.md) |
+| 2026-05-01 | `documentacion-consolidada-y-metadata` | Corrección: parámetros del pipeline — 13 parámetros reales (`volumen` + rutas individuales por fuente) en lugar de `ruta_base` + `ruta_base_autoloader` (no implementados) | [tasks.md#2.1](/.kiro/specs/documentacion-consolidada-y-metadata/tasks.md) |
+| 2026-05-01 | `documentacion-consolidada-y-metadata` | Corrección: estrategia Sat_Transaccion_* — `@dp.append_flow()` puro (sin `procesar_satellite_transaccional()`). La función existe en LSDPUtilidadPrincipal pero no es invocada; la deduplicación natural la da CDF + unicidad de TRXID | [tasks.md#2.1](/.kiro/specs/documentacion-consolidada-y-metadata/tasks.md) |
+| 2026-05-01 | `documentacion-consolidada-y-metadata` | Corrección: Tabla de convenciones `Fact_` → `Hec_` para tabla de hechos | [tasks.md#2.1](/.kiro/specs/documentacion-consolidada-y-metadata/tasks.md) |
+| 2026-05-01 | `documentacion-consolidada-y-metadata` | Corrección: referencias a `SYSTEM2.md` en tabla de riesgos R1-R12 actualizadas a "SYSTEM.md" | [tasks.md#2.1](/.kiro/specs/documentacion-consolidada-y-metadata/tasks.md) |
+| 2026-05-01 | `documentacion-consolidada-y-metadata` | Corrección: R10 (Dim_Tiempo) — implementada como `@dp.materialized_view` incremental, NO como ST acumulativa | [tasks.md#2.1](/.kiro/specs/documentacion-consolidada-y-metadata/tasks.md) |
+| 2026-05-01 | `documentacion-consolidada-y-metadata` | Corrección: R12 — `DimIdCliente`/`DimIdOperacion` estables usando `xxhash64(hash_col).cast("long")` (no `dense_rank`) | [tasks.md#2.1](/.kiro/specs/documentacion-consolidada-y-metadata/tasks.md) |
 
 ## Glosario de Términos
 
