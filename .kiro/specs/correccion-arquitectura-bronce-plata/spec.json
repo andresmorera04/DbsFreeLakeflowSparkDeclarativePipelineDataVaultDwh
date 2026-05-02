@@ -1,0 +1,23 @@
+{
+  "feature_name": "correccion-arquitectura-bronce-plata",
+  "created_at": "2026-04-14T00:00:00Z",
+  "updated_at": "2026-04-15T00:00:00Z",
+  "language": "es",
+  "phase": "implemented",
+  "approvals": {
+    "requirements": {
+      "generated": true,
+      "approved": true
+    },
+    "design": {
+      "generated": true,
+      "approved": true
+    },
+    "tasks": {
+      "generated": true,
+      "approved": true
+    }
+  },
+  "ready_for_implementation": true,
+  "implementation_completed": true
+}
