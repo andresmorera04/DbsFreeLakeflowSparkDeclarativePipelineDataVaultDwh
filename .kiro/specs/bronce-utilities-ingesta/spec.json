@@ -1,0 +1,33 @@
+{
+  "feature_name": "bronce-utilities-ingesta",
+  "created_at": "2026-04-09T00:00:00Z",
+  "updated_at": "2026-04-12T00:00:00Z",
+  "language": "es",
+  "phase": "validated",
+  "approvals": {
+    "requirements": {
+      "generated": true,
+      "approved": true
+    },
+    "design": {
+      "generated": true,
+      "approved": true
+    },
+    "tasks": {
+      "generated": true,
+      "approved": true
+    }
+  },
+  "ready_for_implementation": true,
+  "validation": {
+    "validated": true,
+    "validated_at": "2026-04-12T00:00:00Z",
+    "validated_by": "user",
+    "results": {
+      "unit_tests": "passed",
+      "parquet_generation": "passed",
+      "lsdp_bronze_execution": "passed"
+    },
+    "notes": "Todas las pruebas unitarias, la generación de Parquets y la ejecución del pipeline LSDP de Bronce se completaron exitosamente."
+  }
+}
