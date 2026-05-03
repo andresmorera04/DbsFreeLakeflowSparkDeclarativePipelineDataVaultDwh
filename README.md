@@ -625,12 +625,12 @@ Videos de demostracion del laboratorio organizados por etapa de ejecucion:
 
 | Etapa | Descripcion | Enlace |
 |-------|-------------|--------|
-| Configuracion inicial | Clonado del repositorio, ejecucion de `NbConfiguracionInicial.py` y generacion de datos sinteticos (CMSTFL, BLNCFL, TRXPFL) | [Ver video](URL_VIDEO_CONFIGURACION_INICIAL) |
-| Ejecucion Bronce | Creacion del pipeline, configuracion de los 13 parametros y primera ejecucion — ingesta incremental AutoLoader sobre las tres Streaming Tables | [Ver video](URL_VIDEO_EJECUCION_BRONCE) |
-| Ejecucion Plata | Transformacion del Raw Vault Data Vault 2.0 — Hubs, Links y Satellites con estrategias AUTO CDC y append flow; verificacion de integridad referencial y hash | [Ver video](URL_VIDEO_EJECUCION_PLATA) |
-| Ejecucion Oro | Materializacion del Modelo Estrella — dimensiones y tabla de hechos ATM con validacion de calidad (Expectations) y consulta analitica final | [Ver video](URL_VIDEO_EJECUCION_ORO) |
-
-> Reemplaza cada `URL_VIDEO_*` con la URL real del video correspondiente una vez publicado.
+| Configuracion inicial — Parte 1 | Clonado del repositorio, creacion de catalogos y Volume UC con `NbConfiguracionInicial.py` | [Ver video](https://drive.google.com/file/d/11XptallIxQa2tYLAypPOaOuHpSLdbMyL/view?usp=sharing) |
+| Configuracion inicial — Parte 2 | Generacion de datos sinteticos (CMSTFL, BLNCFL, TRXPFL) con los notebooks generadores | [Ver video](https://drive.google.com/file/d/1FDpXZOHSmc2QeqsFKdkxO6_uHuh1-jQE/view?usp=sharing) |
+| Ejecucion Bronce | Creacion del pipeline, configuracion de los 13 parametros y primera ejecucion — ingesta incremental AutoLoader sobre las tres Streaming Tables | [Ver video](https://drive.google.com/file/d/1ha3O5cH_z1v5u5qFhKHGp2h4V-o9QFQP/view?usp=sharing) |
+| Ejecucion Plata | Transformacion del Raw Vault Data Vault 2.0 — Hubs, Links y Satellites con estrategias AUTO CDC y append flow; verificacion de integridad referencial y hash | [Ver video](https://drive.google.com/file/d/157gM0VXBWOq1WxiB_YAj2nIYyYfbwq_H/view?usp=sharing) |
+| Ejecucion Oro | Materializacion del Modelo Estrella — dimensiones y tabla de hechos ATM con validacion de calidad (Expectations) y consulta analitica final | [Ver video](https://drive.google.com/file/d/101NrWq82VC0kXqKXBmUirBQPsx5p_Fa4/view?usp=sharing) |
+| Segunda Ejecucion (Incremental) | Deposito de nuevos Parquets en el Volume UC y ejecucion incremental del pipeline — verificacion de deteccion de cambios en Satellites y propagacion al Modelo Estrella | [Ver video](https://drive.google.com/file/d/1Cun5SaIBa8VU-8-YJfkx5svH5t7Z1RwB/view?usp=sharing) |
 
 ---
 
