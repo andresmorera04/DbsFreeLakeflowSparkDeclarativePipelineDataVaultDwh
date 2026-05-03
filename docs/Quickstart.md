@@ -300,13 +300,12 @@ verificación de resultados de su medalla correspondiente.
 
 | # | Etapa | Descripción | Enlace |
 |---|-------|-------------|--------|
-| 1 | Configuración inicial | Clonado del repositorio como Git Folder, ejecución de `NbConfiguracionInicial.py` y generación de datos sintéticos (CMSTFL, BLNCFL, TRXPFL) | [Ver vídeo](URL_VIDEO_CONFIGURACION_INICIAL) |
-| 2 | Ejecución Bronce | Creación del pipeline LSDP, configuración de los 13 parámetros y primera ejecución del pipeline — ingesta incremental AutoLoader sobre las tres Streaming Tables de Bronce | [Ver vídeo](URL_VIDEO_EJECUCION_BRONCE) |
-| 3 | Ejecución Plata | Transformación del Raw Vault Data Vault 2.0 — Hubs, Links y Satellites — con estrategias AUTO CDC SCD=1 y append flow; verificación de integridad referencial y hash | [Ver vídeo](URL_VIDEO_EJECUCION_PLATA) |
-| 4 | Ejecución Oro | Materialización del Modelo Estrella — Dim_Cliente, Dim_Operacion, Dim_Tiempo y Hec_Transacciones_ATM — con validación de calidad de datos (Expectations) y consulta analítica final | [Ver vídeo](URL_VIDEO_EJECUCION_ORO) |
-
-> **Nota**: Reemplaza cada `URL_VIDEO_*` con la URL real del vídeo correspondiente
-> (YouTube, Loom, Databricks Academy, etc.) una vez que estén publicados.
+| 1 | Configuración inicial — Parte 1 | Clonado del repositorio como Git Folder, creación de catálogos y Volume UC con `NbConfiguracionInicial.py` | [Ver vídeo](https://drive.google.com/file/d/11XptallIxQa2tYLAypPOaOuHpSLdbMyL/view?usp=sharing) |
+| 2 | Configuración inicial — Parte 2 | Generación de datos sintéticos con los notebooks generadores (CMSTFL, BLNCFL, TRXPFL) | [Ver vídeo](https://drive.google.com/file/d/1FDpXZOHSmc2QeqsFKdkxO6_uHuh1-jQE/view?usp=sharing) |
+| 3 | Ejecución Bronce | Creación del pipeline LSDP, configuración de los 13 parámetros y primera ejecución del pipeline — ingesta incremental AutoLoader sobre las tres Streaming Tables de Bronce | [Ver vídeo](https://drive.google.com/file/d/1ha3O5cH_z1v5u5qFhKHGp2h4V-o9QFQP/view?usp=sharing) |
+| 4 | Ejecución Plata | Transformación del Raw Vault Data Vault 2.0 — Hubs, Links y Satellites — con estrategias AUTO CDC SCD=1 y append flow; verificación de integridad referencial y hash | [Ver vídeo](https://drive.google.com/file/d/157gM0VXBWOq1WxiB_YAj2nIYyYfbwq_H/view?usp=sharing) |
+| 5 | Ejecución Oro | Materialización del Modelo Estrella — Dim_Cliente, Dim_Operacion, Dim_Tiempo y Hec_Transacciones_ATM — con validación de calidad de datos (Expectations) y consulta analítica final | [Ver vídeo](https://drive.google.com/file/d/101NrWq82VC0kXqKXBmUirBQPsx5p_Fa4/view?usp=sharing) |
+| 6 | Segunda Ejecución (Incremental) | Depósito de nuevos Parquets en el Volume UC y ejecución incremental del pipeline — verificación de detección de cambios en Satellites y propagación al Modelo Estrella | [Ver vídeo](https://drive.google.com/file/d/1Cun5SaIBa8VU-8-YJfkx5svH5t7Z1RwB/view?usp=sharing) |
 
 ---
 
