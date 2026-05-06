@@ -1,3 +1,4 @@
+# Databricks notebook source
 # ---------------------------------------------------------------------------
 # LSDPOroMapClienteOperacionDominante.py — Mapa Cliente → Operación Dominante
 # ---------------------------------------------------------------------------
