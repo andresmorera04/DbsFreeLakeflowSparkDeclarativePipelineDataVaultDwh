@@ -1,3 +1,4 @@
+# Databricks notebook source
 # ---------------------------------------------------------------------------
 # LSDPOroDimCliente.py — Dim_Cliente como Vista Materializada Tipo 1
 # ---------------------------------------------------------------------------
