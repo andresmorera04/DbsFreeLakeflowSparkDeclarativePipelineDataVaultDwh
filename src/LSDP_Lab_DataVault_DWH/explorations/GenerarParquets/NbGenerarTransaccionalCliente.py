@@ -49,7 +49,7 @@ dbutils.widgets.text("catalogoParametro",          "control",                   
 dbutils.widgets.text("esquemaParametro",           "lab1",                         "Esquema de la tabla Parametros")
 dbutils.widgets.text("tablaParametros",            "Parametros",                       "Nombre de la tabla Parametros")
 dbutils.widgets.text("cantidadTransacciones",      "150000",                           "Cantidad de transacciones a generar")
-dbutils.widgets.text("fechaTransaccion",           "",                                 "Fecha de transacciones formato YYYY-MM-DD")
+dbutils.widgets.text("fechaTransaccion",           "2026-05-06",                       "Fecha de transacciones formato YYYY-MM-DD")
 dbutils.widgets.text("rutaRelativaTransaccional",  "LSDP_Base/As400/Transaccional/",   "Ruta relativa destino del parquet transaccional")
 dbutils.widgets.text("rutaRelativaMaestroCliente", "LSDP_Base/As400/MaestroCliente/",  "Ruta relativa del parquet CMSTFL existente")
 dbutils.widgets.text("rutaRelativaParquetsExistentes", "",                             "Ruta relativa de parquets TRXPFL existentes para continuar secuencia (vacio=primer archivo)")
