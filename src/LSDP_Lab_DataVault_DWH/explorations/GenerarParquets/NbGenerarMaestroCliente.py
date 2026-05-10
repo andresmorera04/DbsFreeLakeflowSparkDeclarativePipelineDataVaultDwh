@@ -764,11 +764,23 @@ else:
 # ==============================================================================
 # PASO 11: ESCRITURA DEL PARQUET
 # ==============================================================================
+# Particionamiento Hive-style (año=YYYY/mes=MM/dia=DD) requerido por AutoLoader
+# en los notebooks Bronze para inferir columnas de particion automaticamente.
+# ==============================================================================
 
 tiempo_inicio_escritura = time.time()
-print(f"Escribiendo parquet en: {ruta_completa}")
 
-df_cmstfl.coalesce(numero_particiones).write.mode("overwrite").parquet(ruta_completa)
+hoy = date.today()
+df_cmstfl = (
+    df_cmstfl
+    .withColumn("año", F.lit(str(hoy.year)))
+    .withColumn("mes", F.lit(f"{hoy.month:02d}"))
+    .withColumn("dia", F.lit(f"{hoy.day:02d}"))
+)
+
+print(f"Escribiendo parquet en: {ruta_completa} (particionado por año/mes/dia)")
+
+df_cmstfl.coalesce(numero_particiones).write.partitionBy("año", "mes", "dia").mode("overwrite").parquet(ruta_completa)
 
 tiempo_fin_escritura = time.time()
 tiempo_escritura     = round(tiempo_fin_escritura - tiempo_inicio_escritura, 3)
