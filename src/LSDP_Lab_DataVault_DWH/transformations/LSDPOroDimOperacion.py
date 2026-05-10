@@ -1,3 +1,4 @@
+# Databricks notebook source
 # ---------------------------------------------------------------------------
 # LSDPOroDimOperacion.py — Dim_Operacion como Vista Materializada Tipo 1
 # ---------------------------------------------------------------------------
