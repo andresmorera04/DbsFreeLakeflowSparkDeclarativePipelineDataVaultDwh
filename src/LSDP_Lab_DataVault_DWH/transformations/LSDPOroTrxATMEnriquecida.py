@@ -1,3 +1,4 @@
+# Databricks notebook source
 # ---------------------------------------------------------------------------
 # LSDPOroTrxATMEnriquecida.py — Transacciones ATM pre-enriquecidas (Streaming)
 # ---------------------------------------------------------------------------
