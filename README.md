@@ -431,6 +431,11 @@ NbGenerarSaldosCliente.py       # Genera BLNCFL  \  en paralelo
 NbGenerarTransaccionalCliente.py # Genera TRXPFL  /
 ```
 
+> **Importante**: `NbGenerarTransaccionalCliente.py` requiere el widget `fechaTransaccion`
+> (obligatorio, sin valor por defecto). Antes de ejecutar, proporciona una fecha en formato
+> `YYYY-MM-DD` (por ejemplo `2026-01-15`). Este valor determina la particion fisica del
+> Parquet de salida y la fecha base de las transacciones generadas.
+
 **Paso 4 — Crear el pipeline LSDP**
 
 En Databricks: `Workflows → Lakeflow Spark Declarative Pipelines → Create Pipeline`
