@@ -1,3 +1,4 @@
+# Databricks notebook source
 # ---------------------------------------------------------------------------
 # LSDPOroDimTiempo.py — Dim_Tiempo como Vista Materializada Incremental
 # ---------------------------------------------------------------------------

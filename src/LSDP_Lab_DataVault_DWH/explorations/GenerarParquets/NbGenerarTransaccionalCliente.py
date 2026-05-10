@@ -49,7 +49,7 @@ dbutils.widgets.text("catalogoParametro",          "control",                   
 dbutils.widgets.text("esquemaParametro",           "lab1",                         "Esquema de la tabla Parametros")
 dbutils.widgets.text("tablaParametros",            "Parametros",                       "Nombre de la tabla Parametros")
 dbutils.widgets.text("cantidadTransacciones",      "150000",                           "Cantidad de transacciones a generar")
-dbutils.widgets.text("fechaTransaccion",           "",                                 "Fecha de transacciones formato YYYY-MM-DD")
+dbutils.widgets.text("fechaTransaccion",           "2026-05-06",                       "Fecha de transacciones formato YYYY-MM-DD")
 dbutils.widgets.text("rutaRelativaTransaccional",  "LSDP_Base/As400/Transaccional/",   "Ruta relativa destino del parquet transaccional")
 dbutils.widgets.text("rutaRelativaMaestroCliente", "LSDP_Base/As400/MaestroCliente/",  "Ruta relativa del parquet CMSTFL existente")
 dbutils.widgets.text("rutaRelativaParquetsExistentes", "",                             "Ruta relativa de parquets TRXPFL existentes para continuar secuencia (vacio=primer archivo)")
@@ -483,11 +483,23 @@ df_trxpfl.groupBy("TRXTYP").count().orderBy(F.desc("count")).show(20, truncate=F
 # ==============================================================================
 # PASO 10: ESCRITURA DEL PARQUET
 # ==============================================================================
+# Particionamiento Hive-style (año=YYYY/mes=MM/dia=DD) requerido por AutoLoader
+# en los notebooks Bronze para inferir columnas de particion automaticamente.
+# ==============================================================================
 
 tiempo_inicio_escritura = time.time()
-print(f"Escribiendo parquet en: {ruta_completa_transac}")
 
-df_trxpfl.coalesce(numero_particiones).write.mode("overwrite").parquet(ruta_completa_transac)
+hoy = date.today()
+df_trxpfl = (
+    df_trxpfl
+    .withColumn("año", F.lit(str(hoy.year)))
+    .withColumn("mes", F.lit(f"{hoy.month:02d}"))
+    .withColumn("dia", F.lit(f"{hoy.day:02d}"))
+)
+
+print(f"Escribiendo parquet en: {ruta_completa_transac} (particionado por año/mes/dia)")
+
+df_trxpfl.coalesce(numero_particiones).write.partitionBy("año", "mes", "dia").mode("overwrite").parquet(ruta_completa_transac)
 
 tiempo_fin_escritura = time.time()
 tiempo_escritura     = round(tiempo_fin_escritura - tiempo_inicio_escritura, 3)

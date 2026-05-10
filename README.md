@@ -431,6 +431,11 @@ NbGenerarSaldosCliente.py       # Genera BLNCFL  \  en paralelo
 NbGenerarTransaccionalCliente.py # Genera TRXPFL  /
 ```
 
+> **Importante**: `NbGenerarTransaccionalCliente.py` requiere el widget `fechaTransaccion`
+> (obligatorio, sin valor por defecto). Antes de ejecutar, proporciona una fecha en formato
+> `YYYY-MM-DD` (por ejemplo `2026-01-15`). Este valor determina la particion fisica del
+> Parquet de salida y la fecha base de las transacciones generadas.
+
 **Paso 4 — Crear el pipeline LSDP**
 
 En Databricks: `Workflows → Lakeflow Spark Declarative Pipelines → Create Pipeline`
@@ -456,21 +461,27 @@ Primera carga: `Start → Full Refresh`. Ejecuciones posteriores: `Start → Tri
 Todos los parametros se configuran en `Advanced → Configuration` del pipeline LSDP.
 Ninguno tiene valor hard-coded en el codigo:
 
-| Parametro | Valor ejemplo | Descripcion |
-|-----------|--------------|-------------|
-| `pipeline.catalogo` | `lsdp_bronce` | Catalogo Unity Catalog para la capa Bronce |
-| `pipeline.esquema` | `lab_dwh` | Esquema de la capa Bronce |
-| `pipeline.volumen` | `landing_zone` | Nombre del Volume UC para la Landing Zone |
-| `pipeline.catalogo_plata` | `lsdp_plata` | Catalogo Unity Catalog para la capa Plata |
-| `pipeline.esquema_plata` | `lab_dwh` | Esquema de la capa Plata |
-| `pipeline.catalogo_oro` | `lsdp_oro` | Catalogo Unity Catalog para la capa Oro |
-| `pipeline.esquema_oro` | `lab_dwh` | Esquema de la capa Oro |
-| `pipeline.ruta_cmstfl` | `origenes/cmstfl` | Ruta relativa al Volume para archivos CMSTFL |
-| `pipeline.ruta_trxpfl` | `origenes/trxpfl` | Ruta relativa al Volume para archivos TRXPFL |
-| `pipeline.ruta_blncfl` | `origenes/blncfl` | Ruta relativa al Volume para archivos BLNCFL |
+| Parametro | Valor por defecto (NbConfiguracionInicial) | Descripcion |
+|-----------|-------------------------------------------|-------------|
+| `pipeline.catalogo` | `bronce` | Catalogo Unity Catalog para la capa Bronce (debe coincidir con `catalogoVolume` de la tabla Parametros) |
+| `pipeline.esquema` | `lab1` | Esquema de la capa Bronce (debe coincidir con `esquemaVolume` de la tabla Parametros) |
+| `pipeline.volumen` | `datos_bronce` | Nombre del Volume UC para la Landing Zone (debe coincidir con `nombreVolume` de la tabla Parametros) |
+| `pipeline.catalogo_plata` | `plata` | Catalogo Unity Catalog para la capa Plata (debe coincidir con `catalogoPlata` de la tabla Parametros) |
+| `pipeline.esquema_plata` | `lab1` | Esquema de la capa Plata (debe coincidir con `esquemaPlata` de la tabla Parametros) |
+| `pipeline.catalogo_oro` | `oro` | Catalogo Unity Catalog para la capa Oro (debe coincidir con `catalogoOro` de la tabla Parametros) |
+| `pipeline.esquema_oro` | `lab1` | Esquema de la capa Oro (debe coincidir con `esquemaOro` de la tabla Parametros) |
+| `pipeline.ruta_cmstfl` | `LSDP_Base/As400/MaestroCliente` | Ruta relativa al Volume para archivos CMSTFL (debe coincidir con `rutaRelativaMaestroCliente` del notebook generador) |
+| `pipeline.ruta_trxpfl` | `LSDP_Base/As400/Transaccional` | Ruta relativa al Volume para archivos TRXPFL (debe coincidir con `rutaRelativaTransaccional` del notebook generador) |
+| `pipeline.ruta_blncfl` | `LSDP_Base/As400/SaldoCliente` | Ruta relativa al Volume para archivos BLNCFL (debe coincidir con `rutaRelativaSaldoCliente` del notebook generador) |
 | `pipeline.schema_location_cmstfl` | `_schema/cmstfl` | Directorio AutoLoader para inferencia de schema CMSTFL |
 | `pipeline.schema_location_trxpfl` | `_schema/trxpfl` | Directorio AutoLoader para inferencia de schema TRXPFL |
 | `pipeline.schema_location_blncfl` | `_schema/blncfl` | Directorio AutoLoader para inferencia de schema BLNCFL |
+
+> **Importante**: Los valores de catalogo, esquema, volumen y rutas relativas **deben
+> coincidir** con los que `NbConfiguracionInicial.py` almaceno en la tabla `Parametros`
+> y con los que los notebooks generadores utilizan como destino de los archivos Parquet.
+> Si se modifican los widgets de los notebooks generadores, los parametros del pipeline
+> deben actualizarse de forma correspondiente.
 
 Las rutas `ruta_*` y `schema_location_*` son relativas al Volume UC. La ruta absoluta
 construida por el codigo es:

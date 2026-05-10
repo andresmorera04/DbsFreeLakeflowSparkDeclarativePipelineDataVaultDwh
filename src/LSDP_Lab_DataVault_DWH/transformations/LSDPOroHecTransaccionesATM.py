@@ -1,3 +1,4 @@
+# Databricks notebook source
 # ---------------------------------------------------------------------------
 # LSDPOroHecTransaccionesATM.py — Hec_Transacciones_ATM como Vista Materializada
 # ---------------------------------------------------------------------------
