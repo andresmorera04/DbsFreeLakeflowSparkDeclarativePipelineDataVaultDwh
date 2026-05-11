@@ -18,6 +18,7 @@
 6. [Incrementalidad de Hec_Transacciones_ATM](#6-incrementalidad-de-hec_transacciones_atm)
 7. [Utilities del Pipeline](#7-utilities-del-pipeline)
 8. [Tests y Calidad](#8-tests-y-calidad)
+9. [Requerimientos de Git Folders en Databricks](#9-requerimientos-de-git-folders-en-databricks)
 
 ---
 
@@ -486,6 +487,63 @@ convención:
 
 ---
 
+## 9. Requerimientos de Git Folders en Databricks
+
+### 9.1 Header mágico `# Databricks notebook source`
+
+Todos los archivos `.py` que Databricks debe reconocer como **notebooks** (en lugar de
+scripts Python simples) dentro de un Git Folder deben comenzar con la línea:
+
+```python
+# Databricks notebook source
+```
+
+**Sin este header**, Databricks importa el archivo como `FILE` en lugar de `NOTEBOOK`.
+Al ejecutar el pipeline LSDP, el runtime lanza `NOTEBOOK_NOT_FOUND` porque no puede
+localizar la fuente declarada.
+
+**Aplica a todos los notebooks del pipeline**:
+
+| Capa | Archivos afectados |
+|------|-------------------|
+| Bronce | `LSDPBronceCMSTFL.py`, `LSDPBronceTRXPFL.py`, `LSDPBronceBLNCFL.py` |
+| Plata | `LSDPPlataHub*.py`, `LSDPPlataLink*.py`, `LSDPPlataSat*.py`, `LSDPPlataVistaTRXPFLCDF.py` |
+| Oro | `LSDPOroDimCliente.py`, `LSDPOroDimOperacion.py`, `LSDPOroDimTiempo.py`, `LSDPOroHecTransaccionesATM.py`, `LSDPOroTrxATMEnriquecida.py`, `LSDPOroMapClienteOperacionDominante.py` |
+| Exploración | `NbConfiguracionInicial.py`, `NbGenerarMaestroCliente.py`, `NbGenerarSaldosCliente.py`, `NbGenerarTransaccionalCliente.py`, `NbComentariosTablas.py` |
+
+> Los archivos en `utilities/` (`LSDPConfiguracion.py`, `LSDPUtilidadPrincipal.py`,
+> `LSDPUtilidadOro.py`) son **módulos Python** importados vía `%run` — no son notebooks
+> y no llevan este header.
+
+### 9.2 Particionamiento Hive-style en los notebooks generadores
+
+Los notebooks de Bronce usan AutoLoader con inferencia de columnas de partición mediante
+**lazy evaluation**: Spark infiere `año`, `mes`, `dia` desde la estructura de directorios
+`año=YYYY/mes=MM/dia=DD/` sin necesidad de declararlas explícitamente en el esquema.
+
+Para que esta inferencia funcione correctamente, los notebooks generadores de Parquet
+**deben** escribir con `partitionBy`:
+
+```python
+df.coalesce(numero_particiones) \
+  .write \
+  .partitionBy("año", "mes", "dia") \
+  .mode("overwrite") \
+  .parquet(ruta_completa)
+```
+
+Si se omite `.partitionBy("año", "mes", "dia")`, los archivos se depositan planos (sin
+subdirectorios de partición), AutoLoader no puede resolver la columna `año` en tiempo de
+ejecución y el pipeline lanza `AnalysisException: Column 'año' does not exist`.
+
+Este patrón está implementado en los tres notebooks generadores:
+- `NbGenerarMaestroCliente.py`
+- `NbGenerarSaldosCliente.py`
+- `NbGenerarTransaccionalCliente.py`
+
+---
+
 _Documento generado durante el incremento `documentacion-consolidada-y-metadata` · 2026-05-01_  
+_Ultima actualizacion: 2026-05-10 — sección 9 agregada (requerimientos Git Folders, AndresACV, PR #21)_  
 _Mantenido en: [docs/ManualTecnico.md](./ManualTecnico.md)_  
 _Ver también_: [Modelo de Datos](./ModeloDatos.md) · [Quickstart](./Quickstart.md)

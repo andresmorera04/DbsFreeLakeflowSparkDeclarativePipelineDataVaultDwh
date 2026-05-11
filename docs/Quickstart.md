@@ -171,7 +171,7 @@ TEXT, RTRO, PGSV, NMNA, INTR · baja (~10 %): ADSL, IMPT, DMCL, CMSN.
 | `esquemaParametro` | `lab1` | Esquema dentro del catálogo de control |
 | `tablaParametros` | `Parametros` | Nombre de la tabla Delta de parámetros |
 | `cantidadTransacciones` | `150000` | Número de transacciones a generar en la ejecución |
-| `fechaTransaccion` | *(obligatorio, sin valor por defecto)* | Fecha de las transacciones en formato `YYYY-MM-DD`. Determina la partición física del Parquet de salida |
+| `fechaTransaccion` | `2026-05-06` | Fecha de las transacciones en formato `YYYY-MM-DD`. Determina la partición física del Parquet de salida y la fecha base de las transacciones generadas. Proporciona siempre un valor explícito para controlar la partición de destino |
 | `rutaRelativaTransaccional` | `LSDP_Base/As400/Transaccional/` | Ruta relativa dentro del Volume UC donde se escribe el Parquet de salida TRXPFL |
 | `rutaRelativaMaestroCliente` | `LSDP_Base/As400/MaestroCliente/` | Ruta relativa del Parquet CMSTFL existente del que se leen los CUSTID para integridad referencial |
 | `rutaRelativaParquetsExistentes` | *(vacío)* | Ruta de Parquets TRXPFL ya existentes para continuar la secuencia de IDs de transacción. Vacío indica que es el primer archivo (la secuencia empieza desde 1) |
@@ -205,21 +205,21 @@ TEXT, RTRO, PGSV, NMNA, INTR · baja (~10 %): ADSL, IMPT, DMCL, CMSN.
 En la configuración del pipeline, sección **Advanced → Configuration**, agregar cada par
 `clave = valor`. Los valores ejemplo asumen catálogos `lsdp_bronce`, `lsdp_plata`, `lsdp_oro`:
 
-| Parámetro | Valor ejemplo | Descripción |
-|-----------|--------------|-------------|
-| `pipeline.catalogo` | `lsdp_bronce` | Catálogo de Bronce en Unity Catalog |
-| `pipeline.esquema` | `lab_dwh` | Esquema de Bronce |
-| `pipeline.volumen` | `landing_zone` | Nombre del Volume UC para Landing Zone |
-| `pipeline.catalogo_plata` | `lsdp_plata` | Catálogo de Plata (Data Vault 2.0) |
-| `pipeline.esquema_plata` | `lab_dwh` | Esquema de Plata |
-| `pipeline.catalogo_oro` | `lsdp_oro` | Catálogo de Oro (Modelo Estrella) |
-| `pipeline.esquema_oro` | `lab_dwh` | Esquema de Oro |
-| `pipeline.ruta_cmstfl` | `origenes/cmstfl` | Ruta relativa al Volume para CMSTFL |
-| `pipeline.ruta_trxpfl` | `origenes/trxpfl` | Ruta relativa al Volume para TRXPFL |
-| `pipeline.ruta_blncfl` | `origenes/blncfl` | Ruta relativa al Volume para BLNCFL |
-| `pipeline.schema_location_cmstfl` | `_schema/cmstfl` | Directorio de inferencia de schema AutoLoader |
-| `pipeline.schema_location_trxpfl` | `_schema/trxpfl` | Directorio de inferencia de schema AutoLoader |
-| `pipeline.schema_location_blncfl` | `_schema/blncfl` | Directorio de inferencia de schema AutoLoader |
+| Parámetro | Valor por defecto | Descripción |
+|-----------|------------------|-------------|
+| `pipeline.catalogo` | `bronce` | Catálogo de Bronce en Unity Catalog (coincide con `catalogoVolume` de la tabla Parametros) |
+| `pipeline.esquema` | `lab1` | Esquema de Bronce (coincide con `esquemaVolume` de la tabla Parametros) |
+| `pipeline.volumen` | `datos_bronce` | Nombre del Volume UC para Landing Zone (coincide con `nombreVolume` de la tabla Parametros) |
+| `pipeline.catalogo_plata` | `plata` | Catálogo de Plata — Data Vault 2.0 (coincide con `catalogoPlata` de la tabla Parametros) |
+| `pipeline.esquema_plata` | `lab1` | Esquema de Plata (coincide con `esquemaPlata` de la tabla Parametros) |
+| `pipeline.catalogo_oro` | `oro` | Catálogo de Oro — Modelo Estrella (coincide con `catalogoOro` de la tabla Parametros) |
+| `pipeline.esquema_oro` | `lab1` | Esquema de Oro (coincide con `esquemaOro` de la tabla Parametros) |
+| `pipeline.ruta_cmstfl` | `LSDP_Base/As400/MaestroCliente` | Ruta relativa al Volume para CMSTFL (coincide con `rutaRelativaMaestroCliente` del notebook generador) |
+| `pipeline.ruta_trxpfl` | `LSDP_Base/As400/Transaccional` | Ruta relativa al Volume para TRXPFL (coincide con `rutaRelativaTransaccional` del notebook generador) |
+| `pipeline.ruta_blncfl` | `LSDP_Base/As400/SaldoCliente` | Ruta relativa al Volume para BLNCFL (coincide con `rutaRelativaSaldoCliente` del notebook generador) |
+| `pipeline.schema_location_cmstfl` | `_schema/cmstfl` | Directorio AutoLoader para inferencia de schema CMSTFL |
+| `pipeline.schema_location_trxpfl` | `_schema/trxpfl` | Directorio AutoLoader para inferencia de schema TRXPFL |
+| `pipeline.schema_location_blncfl` | `_schema/blncfl` | Directorio AutoLoader para inferencia de schema BLNCFL |
 
 > **Nota**: Las rutas `ruta_*` y `schema_location_*` son relativas al Volume UC. La ruta
 > completa que construye el código es:
@@ -318,4 +318,5 @@ verificación de resultados de su medalla correspondiente.
 ---
 
 _Documento generado durante el incremento `documentacion-consolidada-y-metadata` · 2026-05-01_  
+_Ultima actualizacion: 2026-05-10 — correcciones de portabilidad e idempotencia (AndresACV, PR #21)_  
 _Mantenido en: [docs/Quickstart.md](./Quickstart.md)_
