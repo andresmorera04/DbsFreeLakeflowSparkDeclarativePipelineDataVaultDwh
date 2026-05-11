@@ -167,7 +167,7 @@ sin `temporary=True`, que acumulan la historia completa de forma incremental:
 **Caracteristicas tecnicas**:
 
 - Mecanismo: AutoLoader (`cloudFiles`) con inferencia evolutiva de esquema
-- Particionamiento fisico: `año=YYYY/mes=MM/dia=DD/` — Spark infiere las columnas de particion via lazy evaluation
+- Particionamiento fisico: `año=YYYY/mes=MM/dia=DD/` — Spark infiere las columnas de particion via lazy evaluation. Los notebooks generadores escriben con `.write.partitionBy("año", "mes", "dia")` para garantizar la estructura de directorios que AutoLoader requiere
 - Columna derivada: `FechaRegistroParquet` (DATE desde las columnas de particion)
 - Columna `_rescued_data`: captura automatica de campos que no coinciden con el esquema
 - Liquid Clustering: exclusivamente sobre `FechaRegistroParquet`
@@ -658,6 +658,12 @@ Las contribuciones son bienvenidas. Para proponer cambios:
 Para cambios de arquitectura o modelo de datos, considera abrir un issue de discusion
 primero antes de implementar.
 
+### Contribuciones comunitarias destacadas
+
+| Colaborador | PR | Descripcion |
+|------------|-----|-------------|
+| [AndresACV](https://github.com/AndresACV) | [#21](https://github.com/andresmorera04/DbsFreeLakeflowSparkDeclarativePipelineDataVaultDwh/pull/21) | Mejoras de experiencia, portabilidad e idempotencia: header `# Databricks notebook source` en notebooks de Oro, particionamiento Hive-style (`año/mes/dia`) en los tres generadores de Parquet, valor por defecto para el widget `fechaTransaccion`, y correccion de los valores ejemplo de configuracion del pipeline en la documentacion |
+
 ---
 
 ## Licencia
@@ -668,163 +674,4 @@ los terminos completos.
 ---
 
 _Mantenido por [andresmorera04](https://github.com/andresmorera04)_  
-_Ultima actualizacion: 2026-05-02_
-
-
----
-
-## Descripción del proyecto
-
-El laboratorio abarca el ciclo completo de ingeniería de datos estructurado en tres capas
-(Arquitectura Medallón):
-
-**Bronce — Ingesta incremental**  
-AutoLoader consume archivos Parquet depositados en un Volume de Unity Catalog y los
-materializa como Streaming Tables persistentes. Cada tabla acumula la historia completa
-con liquid clustering sobre `FechaRegistroParquet`.
-
-**Plata — Data Vault 2.0 Raw Vault**  
-Los datos de Bronce se transforman en 14 entidades del Raw Vault: 3 Hubs, 2 Links y
-9 Satellites. Las entidades de alta cardinalidad (Hub_Cliente, Hub_Operacion,
-Link_Cliente_Operacion) usan `dp.create_auto_cdc_flow(stored_as_scd_type=1)` para
-garantizar deduplicación cross-batch O(delta) sin full scan. Los Satellites implementan
-detección de cambio vía `Hash_Diferenciador` (SHA2-512).
-
-**Oro — Modelo Estrella**  
-Cuatro entidades analíticas: `Dim_Cliente`, `Dim_Operacion`, `Dim_Tiempo` y
-`Hec_Transacciones_ATM`. La tabla de hechos se materializa como Materialized View filtrada
-exclusivamente sobre transacciones ATM (DATM y CATM) con llaves subrogadas e integridad
-referencial declarativa.
-
----
-
-## Stack tecnológico
-
-| Componente | Tecnología |
-|------------|------------|
-| Plataforma | Databricks Free Edition |
-| Cómputo | Serverless Compute (sin clúster dedicado) |
-| Catálogo | Unity Catalog |
-| Motor de pipeline | Lakeflow Spark Declarative Pipelines (LSDP) |
-| Ingesta | AutoLoader (`cloudFiles`) |
-| Formato de almacenamiento | Delta Lake |
-| Lenguaje | Python 3 / PySpark |
-| Modelado de datos | Data Vault 2.0 + Modelo Estrella Dimensional |
-| Hash de llaves | SHA2-256 (Hubs/Links) · SHA2-512 (Hash_Diferenciador) |
-| CI / SDD | Kiro-style Spec-Driven Development (cc-sdd) |
-
----
-
-## Estructura del repositorio
-
-```
-.
-├── src/
-│   └── LSDP_Lab_DataVault_DWH/
-│       ├── explorations/
-│       │   ├── GenerarParquets/          # Notebooks generadores de datos sintéticos
-│       │   │   ├── NbConfiguracionInicial.py
-│       │   │   ├── NbGenerarMaestroCliente.py
-│       │   │   ├── NbGenerarSaldosCliente.py
-│       │   │   └── NbGenerarTransaccionalCliente.py
-│       │   └── Metadata/
-│       │       └── NbComentariosTablas.py  # Aplica COMMENT en Unity Catalog
-│       ├── transformations/              # Pipeline LSDP (Bronce -> Plata -> Oro)
-│       │   ├── LSDPBronce*.py            # Ingesta AutoLoader
-│       │   ├── LSDPPlata*.py             # Data Vault 2.0 Raw Vault
-│       │   └── LSDPOro*.py               # Modelo Estrella
-│       └── utilities/                   # Funciones compartidas del pipeline
-├── tests/                               # Tests unitarios con PySpark local
-├── docs/                                # Documentación técnica y operativa
-│   ├── Quickstart.md
-│   ├── ManualTecnico.md
-│   └── ModeloDatos.md
-├── SYSTEM.md                            # Fuente de verdad centralizada
-└── .kiro/                               # Artefactos del flujo Spec-Driven Development
-    ├── steering/
-    └── specs/
-```
-
----
-
-## Arquitectura del pipeline
-
-```
-Landing Zone (Volume UC — Parquet particionado por fecha)
-         |
-         v
-  [ BRONCE ]  Streaming Tables persistentes (AutoLoader)
-         CMSTFL          TRXPFL          BLNCFL
-         |
-         v
-  [ PLATA ]   Data Vault 2.0 — Raw Vault
-    Hubs       Hub_Cliente · Hub_Operacion · Hub_Transaccion
-    Links      Link_Cliente_Operacion · Link_Cliente_Transaccion
-    Satellites Sat_Cliente_* (x3) · Sat_Operacion_* (x3) · Sat_Transaccion_* (x3)
-         |
-         v
-  [ ORO ]     Modelo Estrella Dimensional
-    Dimensiones  Dim_Cliente · Dim_Operacion · Dim_Tiempo
-    Hechos       Hec_Transacciones_ATM
-```
-
-El pipeline se declara íntegramente en `src/LSDP_Lab_DataVault_DWH/transformations/` y se
-ejecuta en Databricks como un pipeline Lakeflow Spark Declarative Pipelines en modo Triggered o Continuous.
-Todos los parámetros de catálogo, esquema, rutas y ubicaciones de schema se inyectan
-mediante la sección `Advanced → Configuration` del pipeline — sin valores hard-coded en
-el código.
-
----
-
-## Documentación
-
-| Documento | Propósito |
-|-----------|-----------|
-| [SYSTEM.md](SYSTEM.md) | Fuente de verdad centralizada del proyecto. Describe la arquitectura completa, las reglas de modelado, las decisiones técnicas, las restricciones de Serverless y los patrones LSDP. Es el documento primario que alimenta el flujo Spec-Driven Development (cc-sdd): los comandos `/kiro-steering` y `/kiro-spec-init` lo consumen como entrada obligatoria para generar artefactos de alta precisión. |
-| [docs/Quickstart.md](docs/Quickstart.md) | Guía paso a paso para reproducir el laboratorio desde cero en Databricks Free Edition. Cubre: prerequisitos, clonado como Git Folder, generación de datos sintéticos (con todos los widgets documentados), creación y configuración del pipeline, primera ejecución y criterios de verificación de éxito. Incluye una sección de vídeos de demo por etapa. |
-| [docs/ManualTecnico.md](docs/ManualTecnico.md) | Manual de referencia para ingenieros que mantienen o extienden el pipeline. Explica en profundidad el uso de `dp.create_auto_cdc_flow`, `@dp.append_flow`, las Streaming Tables temporales, las Materialized Views, los patrones de hash SHA2-256/512, las restricciones de Serverless (sin `cache`, sin RDD, sin UDFs, sin threading) y las reglas ANSI Mode que aplican en el entorno de ejecución. |
-| [docs/ModeloDatos.md](docs/ModeloDatos.md) | Catálogo exhaustivo de todas las tablas y columnas del pipeline, organizado por medalla (Bronce, Plata, Oro). Por cada entidad incluye: tipo de tabla LSDP, diagrama relacional Mermaid con cardinalidades, catálogo completo de columnas con tipo de dato, descripción de negocio, origen y clasificación (PK, FK, hash, columna técnica Data Vault). Incluye también el diagrama de linaje macro Bronce → Plata → Oro. |
-
----
-
-## Inicio rápido
-
-Consulta [docs/Quickstart.md](docs/Quickstart.md) para la guía completa. El flujo mínimo es:
-
-1. Clonar el repositorio como Git Folder en tu workspace de Databricks
-2. Ejecutar `NbConfiguracionInicial.py` para crear catálogos, esquemas y el Volume UC
-3. Ejecutar los notebooks generadores de datos sintéticos (CMSTFL → BLNCFL + TRXPFL en paralelo)
-4. Crear el pipeline LSDP apuntando a `src/LSDP_Lab_DataVault_DWH/transformations/*.py`
-5. Configurar los 13 parámetros del pipeline en `Advanced → Configuration`
-6. Ejecutar el pipeline con **Full Refresh** en la primera carga
-
----
-
-## Requisitos de plataforma
-
-- Workspace Databricks Free Edition con Serverless habilitado
-- Unity Catalog activo con metastore configurado
-- Tres catálogos creados: Bronce, Plata y Oro
-- Un Volume UC para Landing Zone
-
-No se requiere clúster dedicado. Toda la ejecución del pipeline corre sobre Serverless
-Compute. Los notebooks de exploración y generación de datos sintéticos requieren un
-clúster interactivo independiente al pipeline.
-
----
-
-## Desarrollo y especificaciones
-
-El proyecto sigue el framework **Spec-Driven Development (cc-sdd)** con un ciclo de
-aprobación en tres fases: Requirements → Design → Tasks → Implementation.
-
-Los artefactos de especificación se encuentran en `.kiro/specs/`. Los archivos de steering
-(`product.md`, `tech.md`, `structure.md`) en `.kiro/steering/` actúan como contexto
-persistente para todos los incrementos.
-
----
-
-## Licencia
-
-Repositorio de uso educativo y de laboratorio. Consulta el archivo `LICENSE` para los
-términos de uso aplicables.
+_Ultima actualizacion: 2026-05-10_
